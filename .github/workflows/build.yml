@@ -25,13 +25,14 @@ jobs:
       - name: Generate sale page
         env:
           NINTENDO_SALE_OUT: docs/index.html
+          PSN_NPSSO: ${{ secrets.PSN_NPSSO }}
         run: python nintendo_sale.py
 
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/index.html price_history.json steam_cache.json
+          git add docs/index.html price_history.json steam_cache.json psn_cache.json
           git diff --cached --quiet && exit 0
           git commit -m "update $(TZ=Asia/Tokyo date +%F_%H:%M)"
           git push

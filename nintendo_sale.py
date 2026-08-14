@@ -42,6 +42,18 @@ LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nintendo_sa
 STEAM_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steam_cache.json")
 PRICE_HISTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "price_history.json")
 GC_CATALOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gc_catalog.json")
+PSN_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "psn_cache.json")
+PSN_NPSSO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".psn_npsso")
+
+# --- PSN照会の調整値 ---
+PSN_INTERVAL = 1.0
+PSN_SEARCH_CAP = 150          # 通常実行1回あたりの新規検索数上限
+PSN_REFRESH_CAP = 300         # 通常実行1回あたりの価格/評価再取得数上限
+PSN_REFRESH_DAYS = 4          # PSはセール周期があるので価格は4日ごとに更新
+PSN_NOMATCH_RECHECK_DAYS = 90
+# PlayStation公式Androidアプリのclient資格情報(psn-api等コミュニティで公知の定数)
+PSN_CLIENT_BASIC = "MDk1MTUxNTktNzIzNy00MzcwLTliNDAtMzgwNmU2N2MwODkxOnVjUGprYTV0bnRCMktxc1A="
+PSN_REDIRECT = "com.scee.psxandroid.scecompcall://redirect"
 
 # --- Steam照会の調整値 ---
 STEAM_INTERVAL = 1.0          # リクエスト間隔(秒)。詰めすぎると429になる
@@ -205,6 +217,206 @@ def update_price_history(items):
     os.replace(tmp, PRICE_HISTORY)
     log.info("price history: tracked=%d newlow=%d",
              len(hist), sum(1 for i in items if i.get("nl") == 1))
+
+
+# ---------------------------------------------------------------- PSN
+_last_psn_req = [0.0]
+
+
+def psn_throttled(req):
+    wait = PSN_INTERVAL - (time.monotonic() - _last_psn_req[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last_psn_req[0] = time.monotonic()
+    return urllib.request.urlopen(req, timeout=30)
+
+
+def kata_to_hira(s):
+    return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in s)
+
+
+def psn_get_token():
+    """npsso(env PSN_NPSSO または .psn_npsso) → アプリAPI用アクセストークン"""
+    npsso = os.environ.get("PSN_NPSSO", "").strip()
+    if not npsso:
+        try:
+            with open(PSN_NPSSO_FILE, encoding="utf-8") as f:
+                npsso = f.read().strip()
+        except OSError:
+            return None
+    q = urllib.parse.urlencode({
+        "access_type": "offline",
+        "client_id": "09515159-7237-4370-9b40-3806e67c0891",
+        "response_type": "code",
+        "scope": "psn:mobile.v2.core psn:clientapp",
+        "redirect_uri": PSN_REDIRECT,
+    })
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirect)
+    req = urllib.request.Request(
+        "https://ca.account.sony.com/api/authz/v3/oauth/authorize?" + q,
+        headers={"Cookie": "npsso=" + npsso, "User-Agent": UA})
+    try:
+        r = opener.open(req, timeout=30)
+        loc = r.headers.get("Location", "")
+    except urllib.error.HTTPError as e:
+        loc = e.headers.get("Location", "")
+    if "code=" not in (loc or ""):
+        log.warning("psn: npsso expired or invalid (no auth code)")
+        return None
+    code = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)["code"][0]
+    data = urllib.parse.urlencode({
+        "code": code, "redirect_uri": PSN_REDIRECT,
+        "grant_type": "authorization_code", "token_format": "jwt"}).encode()
+    status, _, body = http("https://ca.account.sony.com/api/authz/v3/oauth/token", data=data,
+                           headers={"Authorization": "Basic " + PSN_CLIENT_BASIC,
+                                    "Content-Type": "application/x-www-form-urlencoded"})
+    if status != 200:
+        log.warning("psn: token exchange failed %s", status)
+        return None
+    return json.loads(body)["access_token"]
+
+
+def psn_search(token, term):
+    body = json.dumps({
+        "searchTerm": term[:100],
+        "domainRequests": [{"domain": "MobileGames",
+                            "pagination": {"pageSize": 5, "offset": 0}}],
+        "countryCode": "jp", "languageCode": "ja", "age": 99}).encode()
+    req = urllib.request.Request(
+        "https://m.np.playstation.com/api/search/v1/universalSearch", data=body,
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
+                 "Country": "JP", "Accept-Language": "ja-JP", "User-Agent": UA})
+    try:
+        d = json.load(psn_throttled(req))
+        return (d.get("domainResponses") or [{}])[0].get("results") or []
+    except (urllib.error.URLError, ValueError, KeyError) as e:
+        log.warning("psn search error for %r: %s", term, e)
+        return []
+
+
+def psn_pick(query, results):
+    """検索結果から確度の高い一致を選ぶ。名前照合(かな対応) or スコア圧勝のみ採用"""
+    target = norm_name(query)
+    target_hira = norm_name(kata_to_hira(query))
+    short = len(target) <= 4  # 「脱出」「仲間」等の一般名詞タイトルは厳格に扱う
+    for r in results[:3]:
+        cm = r.get("conceptMetadata") or {}
+        names = [cm.get("name") or "", cm.get("nameEn") or ""]
+        names += list(((cm.get("localizedName") or {}).get("metadata") or {}).values())
+        ok = False
+        for nm in names:
+            c = norm_name(nm)
+            if c and (c == target
+                      or (not short
+                          and difflib.SequenceMatcher(None, target, c).ratio() >= 0.85)):
+                ok = True
+                break
+        if not ok:
+            ssn = norm_name(kata_to_hira(cm.get("searchAndSortName") or ""))
+            if ssn and target_hira and (
+                    ssn == target_hira
+                    or (not short
+                        and difflib.SequenceMatcher(None, target_hira, ssn).ratio() >= 0.85)):
+                ok = True
+        # 名前照合が無理でも、圧倒的な検索スコアなら採用(実測: 正解750+/ゴミ最大297)。
+        # ただし短い一般名詞タイトルはスコアが高くても誤マッチしやすいので対象外
+        if not ok and not short and r is results[0] and (r.get("score") or 0) >= 400:
+            ok = True
+        if ok:
+            ids = []
+            for cp in cm.get("categorizedProducts") or []:
+                ids += cp.get("ids") or []
+            sr = cm.get("starRating") or {}
+            return {"cid": cm.get("id"), "pid": ids[0] if ids else None,
+                    "nm": cm.get("name"),
+                    "r": float(sr["score"]) if sr.get("score") else None,
+                    "rc": int(sr["total"]) if sr.get("total") else 0}
+    return None
+
+
+def psn_product(pid):
+    """商品ページ(認証不要)から評価と価格を取得"""
+    req = urllib.request.Request(
+        "https://store.playstation.com/ja-jp/product/" + pid,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    try:
+        html = psn_throttled(req).read().decode("utf-8", "replace")
+    except urllib.error.URLError as e:
+        log.warning("psn product fetch failed %s: %s", pid, e)
+        return None
+    m = re.search(r'"averageRating":([\d.]+),"totalRatingsCount":(\d+)', html)
+    p = re.search(r'"basePriceValue":(\d+),"discountedValue":(\d+),"currencyCode":"JPY"', html)
+    out = {}
+    if m:
+        out["r"] = float(m.group(1))
+        out["rc"] = int(m.group(2))
+    if p:
+        out["bp"] = int(p.group(1))
+        out["pp"] = int(p.group(2))
+    return out or None
+
+
+def enrich_psn(items, backfill=False):
+    """PSNレビュー(★)と価格をマージ。照会結果はキャッシュして差分だけ叩く"""
+    try:
+        with open(PSN_CACHE, encoding="utf-8") as f:
+            cache = json.load(f)
+    except (OSError, ValueError):
+        cache = {}
+    token = psn_get_token()
+    now = time.time()
+    day = 86400
+    search_budget = 10**9 if backfill else PSN_SEARCH_CAP
+    refresh_budget = 10**9 if backfill else PSN_REFRESH_CAP
+    searched = refreshed = 0
+    try:
+        for it in items:
+            c = cache.get(it["id"])
+            if c is None or (c.get("cid") is None
+                             and now - c.get("checked", 0) > PSN_NOMATCH_RECHECK_DAYS * day):
+                if token and search_budget > 0:
+                    search_budget -= 1
+                    searched += 1
+                    hit = psn_pick(it["n"], psn_search(token, it["n"]))
+                    c = hit or {"cid": None}
+                    c["checked"] = now
+                    if hit and hit.get("pid"):
+                        prod = psn_product(hit["pid"])
+                        if prod:
+                            c.update(prod)
+                        c["rev_at"] = now
+                    cache[it["id"]] = c
+            if not c or c.get("cid") is None:
+                continue
+            if c.get("pid") and now - c.get("rev_at", 0) > PSN_REFRESH_DAYS * day:
+                if refresh_budget > 0:
+                    refresh_budget -= 1
+                    refreshed += 1
+                    prod = psn_product(c["pid"])
+                    if prod:
+                        c.update(prod)
+                        c["rev_at"] = now
+            if c.get("r") and c.get("rc"):
+                it["pv"] = c["r"]
+                it["pn"] = c["rc"]
+                it["pid"] = c.get("pid")
+                # pp=0 は無料配布/カタログ収録などの特殊ケースなので価格表示しない
+                if c.get("pp"):
+                    it["pp"] = c["pp"]
+                    it["pb"] = c.get("bp")
+    finally:
+        tmp = PSN_CACHE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+        os.replace(tmp, PSN_CACHE)
+        matched = sum(1 for i in items if i.get("pv"))
+        log.info("psn: searched=%d refreshed=%d matched=%d/%d cached=%d token=%s",
+                 searched, refreshed, matched, len(items), len(cache), bool(token))
 
 
 GC_VERDICT_DISPLAY = {"良": "良作", "良*": "良作*", "ク": "クソゲー", "賛否": "賛否両論"}
@@ -398,6 +610,10 @@ input[type=search] { width:180px; }
 .gc:hover { text-decoration:underline; }
 .gc.good { color:#2e7d32; } .gc.mid { color:#b26a00; } .gc.bad { color:#c62828; } .gc.na { color:var(--sub); }
 @media (prefers-color-scheme: dark) { .gc.good { color:#7bc67e; } .gc.mid { color:#e0a34e; } .gc.bad { color:#e57373; } }
+.psn { font-size:10px; margin-top:2px; cursor:pointer; color:#0057b8; }
+.psn:hover { text-decoration:underline; }
+.psn .sale { color:var(--accent); font-weight:600; }
+@media (prefers-color-scheme: dark) { .psn { color:#5c9ded; } }
 #count { font-size:12px; color:var(--sub); padding:0 16px; max-width:1400px; margin:12px auto 0; }
 footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 </style>
@@ -429,16 +645,17 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
   </select>
   <label class="chk"><input type="checkbox" id="steamonly">Steamレビューあり</label>
   <label class="chk"><input type="checkbox" id="gconly">カタログレビューあり</label>
+  <label class="chk"><input type="checkbox" id="psnonly">PSレビューあり</label>
   <label class="chk"><input type="checkbox" id="newlowonly">過去最安のみ</label>
 </header>
 <div id="count"></div>
 <div id="grid"></div>
-<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>「カタログ」は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。</footer>
+<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>「カタログ」は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。</footer>
 <script>
 var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
 var grid = document.getElementById('grid'), count = document.getElementById('count');
-var q = document.getElementById('q'), minpct = document.getElementById('minpct'), maxprice = document.getElementById('maxprice'), sortSel = document.getElementById('sort'), steamOnly = document.getElementById('steamonly'), gcOnly = document.getElementById('gconly'), newLowOnly = document.getElementById('newlowonly');
+var q = document.getElementById('q'), minpct = document.getElementById('minpct'), maxprice = document.getElementById('maxprice'), sortSel = document.getElementById('sort'), steamOnly = document.getElementById('steamonly'), gcOnly = document.getElementById('gconly'), psnOnly = document.getElementById('psnonly'), newLowOnly = document.getElementById('newlowonly');
 function yen(n) { return n == null ? '' : n.toLocaleString('ja-JP') + '円'; }
 function render() {
   var kw = q.value.trim().toLowerCase();
@@ -448,6 +665,7 @@ function render() {
     if (d.p != null && d.p > mxp) return false;
     if (steamOnly.checked && d.sp == null) return false;
     if (gcOnly.checked && !d.gv) return false;
+    if (psnOnly.checked && d.pv == null) return false;
     if (newLowOnly.checked && !d.nl) return false;
     if (kw && d.n.toLowerCase().indexOf(kw) < 0 && d.mk.toLowerCase().indexOf(kw) < 0) return false;
     return true;
@@ -469,6 +687,7 @@ function render() {
       + lowBadge(d)
       + gcBadge(d)
       + steamBadge(d)
+      + psnBadge(d)
       + '</div></a>';
   }).join('');
   grid.innerHTML = html;
@@ -478,6 +697,15 @@ function lowBadge(d) {
   if (d.nl === 2) return '<div class="low tie">過去最安 (' + d.hd.slice(2).replace(/-/g, '/') + '〜)</div>';
   if (d.hm != null && d.hm < d.p) return '<div class="low was">過去最安 ' + yen(d.hm) + ' (' + d.hd.slice(2).replace(/-/g, '/') + ')</div>';
   return '';
+}
+function psnBadge(d) {
+  if (d.pv == null) return '';
+  var s = 'PS ★' + d.pv.toFixed(1) + '(' + d.pn.toLocaleString('ja-JP') + ')';
+  if (d.pp != null) {
+    s += '・' + yen(d.pp);
+    if (d.pb != null && d.pp < d.pb) s += ' <span class="sale">セール中</span>';
+  }
+  return '<div class="psn"' + (d.pid ? ' data-pid="' + d.pid + '"' : '') + '>' + s + '</div>';
 }
 function gcBadge(d) {
   if (!d.gv) return '';
@@ -490,10 +718,12 @@ function steamBadge(d) {
   return '<div class="stm ' + cls + '" data-app="' + d.sa + '">Steam ' + d.sp + '%好評・' + d.sn.toLocaleString('ja-JP') + '件</div>';
 }
 grid.addEventListener('click', function(e) {
-  var b = e.target.closest('.stm, .gc');
+  var b = e.target.closest('.stm, .gc, .psn');
   if (!b) return;
   var url = b.classList.contains('stm')
     ? 'https://store.steampowered.com/app/' + b.getAttribute('data-app') + '/'
+    : b.classList.contains('psn')
+    ? (b.getAttribute('data-pid') ? 'https://store.playstation.com/ja-jp/product/' + b.getAttribute('data-pid') : null)
     : b.getAttribute('data-gu');
   if (!url) return;
   e.preventDefault();
@@ -502,7 +732,7 @@ grid.addEventListener('click', function(e) {
 });
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 q.addEventListener('input', render);
-[minpct, maxprice, sortSel, steamOnly, gcOnly, newLowOnly].forEach(function(el){ el.addEventListener('change', render); });
+[minpct, maxprice, sortSel, steamOnly, gcOnly, psnOnly, newLowOnly].forEach(function(el){ el.addEventListener('change', render); });
 render();
 </script>
 </body>
@@ -524,6 +754,12 @@ def build_html(items):
             d["gv"] = it["gv"]
             if it.get("gu"):
                 d["gu"] = it["gu"]
+        if it.get("pv"):
+            d["pv"], d["pn"] = it["pv"], it["pn"]
+            if it.get("pid"):
+                d["pid"] = it["pid"]
+            if it.get("pp") is not None:
+                d["pp"], d["pb"] = it["pp"], it.get("pb")
         data.append(d)
     now = time.strftime("%Y-%m-%d %H:%M")
     html = (TEMPLATE
@@ -551,6 +787,10 @@ def main():
         except Exception:
             # Steam側の障害でページ生成自体は止めない(キャッシュ済み分は付与されないだけ)
             log.exception("steam enrich failed; continuing without fresh steam data")
+        try:
+            enrich_psn(items, backfill=backfill)
+        except Exception:
+            log.exception("psn enrich failed; continuing without fresh psn data")
         build_html(items)
     except Exception:
         log.exception("failed")
