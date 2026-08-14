@@ -428,6 +428,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
     <option value="steam">Steam好評率順</option>
   </select>
   <label class="chk"><input type="checkbox" id="steamonly">Steamレビューあり</label>
+  <label class="chk"><input type="checkbox" id="gconly">カタログレビューあり</label>
   <label class="chk"><input type="checkbox" id="newlowonly">過去最安のみ</label>
 </header>
 <div id="count"></div>
@@ -437,7 +438,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
 var grid = document.getElementById('grid'), count = document.getElementById('count');
-var q = document.getElementById('q'), minpct = document.getElementById('minpct'), maxprice = document.getElementById('maxprice'), sortSel = document.getElementById('sort'), steamOnly = document.getElementById('steamonly'), newLowOnly = document.getElementById('newlowonly');
+var q = document.getElementById('q'), minpct = document.getElementById('minpct'), maxprice = document.getElementById('maxprice'), sortSel = document.getElementById('sort'), steamOnly = document.getElementById('steamonly'), gcOnly = document.getElementById('gconly'), newLowOnly = document.getElementById('newlowonly');
 function yen(n) { return n == null ? '' : n.toLocaleString('ja-JP') + '円'; }
 function render() {
   var kw = q.value.trim().toLowerCase();
@@ -446,6 +447,7 @@ function render() {
     if (d.pct < mp) return false;
     if (d.p != null && d.p > mxp) return false;
     if (steamOnly.checked && d.sp == null) return false;
+    if (gcOnly.checked && !d.gv) return false;
     if (newLowOnly.checked && !d.nl) return false;
     if (kw && d.n.toLowerCase().indexOf(kw) < 0 && d.mk.toLowerCase().indexOf(kw) < 0) return false;
     return true;
@@ -500,7 +502,7 @@ grid.addEventListener('click', function(e) {
 });
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 q.addEventListener('input', render);
-[minpct, maxprice, sortSel, steamOnly, newLowOnly].forEach(function(el){ el.addEventListener('change', render); });
+[minpct, maxprice, sortSel, steamOnly, gcOnly, newLowOnly].forEach(function(el){ el.addEventListener('change', render); });
 render();
 </script>
 </body>
