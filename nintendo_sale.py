@@ -41,6 +41,7 @@ OUT_HTML = os.environ.get("NINTENDO_SALE_OUT") or os.path.join(
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nintendo_sale.log")
 STEAM_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steam_cache.json")
 PRICE_HISTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "price_history.json")
+GC_CATALOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gc_catalog.json")
 
 # --- Steam照会の調整値 ---
 STEAM_INTERVAL = 1.0          # リクエスト間隔(秒)。詰めすぎると429になる
@@ -206,6 +207,44 @@ def update_price_history(items):
              len(hist), sum(1 for i in items if i.get("nl") == 1))
 
 
+GC_VERDICT_DISPLAY = {"良": "良作", "良*": "良作*", "ク": "クソゲー", "賛否": "賛否両論"}
+
+
+def enrich_game_catalog(items):
+    """ゲームカタログ@Wikiの判定(gc_catalog.json、ブラウザで手動更新する静的データ)をマージ。
+
+    atwikiはボット保護下にあるため自動取得はせず、一覧2ページをブラウザで閲覧して
+    抽出したものを同梱する方式。判定の変化は緩やかなので手動更新で十分。
+    """
+    try:
+        with open(GC_CATALOG, encoding="utf-8") as f:
+            cat = json.load(f)
+    except (OSError, ValueError):
+        log.info("game catalog: no gc_catalog.json, skipping")
+        return
+    bymark = {}
+    buckets = {}
+    for e in cat:
+        key = norm_name(e["t"])
+        bymark[key] = e
+        buckets.setdefault(key[:2], []).append(key)
+    matched = 0
+    for it in items:
+        key = norm_name(it["n"])
+        e = bymark.get(key)
+        if e is None and len(key) >= 2:
+            cands = difflib.get_close_matches(key, buckets.get(key[:2], []), n=1, cutoff=0.92)
+            if cands:
+                e = bymark[cands[0]]
+        if e is None:
+            continue
+        matched += 1
+        it["gv"] = GC_VERDICT_DISPLAY.get(e["v"], e["v"])
+        if e.get("u"):
+            it["gu"] = e["u"]
+    log.info("game catalog: matched=%d/%d (catalog=%d)", matched, len(items), len(cat))
+
+
 _last_steam_req = [0.0]
 
 
@@ -355,6 +394,10 @@ input[type=search] { width:180px; }
 .low.tie { color:#2e7d32; }
 .low.was { color:var(--sub); }
 @media (prefers-color-scheme: dark) { .low.tie { color:#7bc67e; } }
+.gc { font-size:10px; margin-top:2px; cursor:pointer; }
+.gc:hover { text-decoration:underline; }
+.gc.good { color:#2e7d32; } .gc.mid { color:#b26a00; } .gc.bad { color:#c62828; } .gc.na { color:var(--sub); }
+@media (prefers-color-scheme: dark) { .gc.good { color:#7bc67e; } .gc.mid { color:#e0a34e; } .gc.bad { color:#e57373; } }
 #count { font-size:12px; color:var(--sub); padding:0 16px; max-width:1400px; margin:12px auto 0; }
 footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 </style>
@@ -389,7 +432,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 </header>
 <div id="count"></div>
 <div id="grid"></div>
-<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。</footer>
+<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>「カタログ」は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。</footer>
 <script>
 var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
@@ -422,6 +465,7 @@ function render() {
       + '<span class="pr"><b>' + yen(d.p) + '</b>' + (d.mx ? '〜' : '') + '</span></div>'
       + (orig ? '<div class="mk">定価 ' + yen(orig) + '</div>' : '')
       + lowBadge(d)
+      + gcBadge(d)
       + steamBadge(d)
       + '</div></a>';
   }).join('');
@@ -433,17 +477,26 @@ function lowBadge(d) {
   if (d.hm != null && d.hm < d.p) return '<div class="low was">過去最安 ' + yen(d.hm) + ' (' + d.hd.slice(2).replace(/-/g, '/') + ')</div>';
   return '';
 }
+function gcBadge(d) {
+  if (!d.gv) return '';
+  var cls = /^良/.test(d.gv) ? 'good' : /クソ|劣化|シリ不|不安定/.test(d.gv) ? 'bad' : /^なし/.test(d.gv) ? 'na' : 'mid';
+  return '<div class="gc ' + cls + '"' + (d.gu ? ' data-gu="' + esc(d.gu) + '"' : '') + '>カタログ: ' + esc(d.gv) + '</div>';
+}
 function steamBadge(d) {
   if (d.sp == null) return '';
   var cls = d.sp >= 70 ? 'g' : d.sp >= 40 ? 'y' : 'r';
   return '<div class="stm ' + cls + '" data-app="' + d.sa + '">Steam ' + d.sp + '%好評・' + d.sn.toLocaleString('ja-JP') + '件</div>';
 }
 grid.addEventListener('click', function(e) {
-  var b = e.target.closest('.stm');
+  var b = e.target.closest('.stm, .gc');
   if (!b) return;
+  var url = b.classList.contains('stm')
+    ? 'https://store.steampowered.com/app/' + b.getAttribute('data-app') + '/'
+    : b.getAttribute('data-gu');
+  if (!url) return;
   e.preventDefault();
   e.stopPropagation();
-  window.open('https://store.steampowered.com/app/' + b.getAttribute('data-app') + '/', '_blank', 'noopener');
+  window.open(url, '_blank', 'noopener');
 });
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 q.addEventListener('input', render);
@@ -465,6 +518,10 @@ def build_html(items):
             d["hm"], d["hd"] = it["hm"], it["hd"]
             if it.get("nl"):
                 d["nl"] = it["nl"]
+        if it.get("gv"):
+            d["gv"] = it["gv"]
+            if it.get("gu"):
+                d["gu"] = it["gu"]
         data.append(d)
     now = time.strftime("%Y-%m-%d %H:%M")
     html = (TEMPLATE
@@ -486,6 +543,7 @@ def main():
         if len(items) < 100:
             raise RuntimeError(f"suspiciously few items: {len(items)} — keeping previous HTML")
         update_price_history(items)
+        enrich_game_catalog(items)
         try:
             enrich_steam(items, backfill=backfill)
         except Exception:
