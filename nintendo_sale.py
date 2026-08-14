@@ -405,8 +405,8 @@ def enrich_psn(items, backfill=False):
                 it["pv"] = c["r"]
                 it["pn"] = c["rc"]
                 it["pid"] = c.get("pid")
-                # pp=0 は無料配布/カタログ収録などの特殊ケースなので価格表示しない
-                if c.get("pp"):
+                # pp=0 はPS Plusゲームカタログ収録等(加入者は実質無料)なので0円のまま表示する
+                if c.get("pp") is not None:
                     it["pp"] = c["pp"]
                     it["pb"] = c.get("bp")
     finally:
@@ -703,7 +703,8 @@ function psnBadge(d) {
   var s = 'PS ★' + d.pv.toFixed(1) + '(' + d.pn.toLocaleString('ja-JP') + ')';
   if (d.pp != null) {
     s += '・' + yen(d.pp);
-    if (d.pb != null && d.pp < d.pb) s += ' <span class="sale">セール中</span>';
+    if (d.pp === 0) s += ' <span class="sale">PS+カタログ?</span>';
+    else if (d.pb != null && d.pp < d.pb) s += ' <span class="sale">セール中</span>';
   }
   return '<div class="psn"' + (d.pid ? ' data-pid="' + d.pid + '"' : '') + '>' + s + '</div>';
 }
