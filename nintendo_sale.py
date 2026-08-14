@@ -420,7 +420,7 @@ def enrich_psn(items, backfill=False):
 
 
 GC_VERDICT_DISPLAY = {"良": "良作", "良*": "良作*", "ク": "クソゲー", "賛否": "賛否両論",
-                      "なし": "判定なし", "なし*": "判定なし*"}
+                      "なし": "普通", "なし*": "普通*"}
 
 
 def enrich_game_catalog(items):
@@ -711,7 +711,7 @@ function psnBadge(d) {
 }
 function gcBadge(d) {
   if (!d.gv) return '';
-  var cls = /^良/.test(d.gv) ? 'good' : /クソ|劣化|シリ不|不安定/.test(d.gv) ? 'bad' : /なし/.test(d.gv) ? 'na' : 'mid';
+  var cls = /^良/.test(d.gv) ? 'good' : /クソ|劣化|シリ不|不安定/.test(d.gv) ? 'bad' : /^普通/.test(d.gv) ? 'na' : 'mid';
   return '<div class="gc ' + cls + '"' + (d.gu ? ' data-gu="' + esc(d.gu) + '"' : '') + '>カタログ: ' + esc(d.gv) + '</div>';
 }
 function steamBadge(d) {
