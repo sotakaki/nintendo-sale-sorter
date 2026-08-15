@@ -219,6 +219,118 @@ def update_price_history(items):
              len(hist), sum(1 for i in items if i.get("nl") == 1))
 
 
+# ---------------------------------------------------------------- Wikipedia→Steam補完
+WIKI_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wiki_cache.json")
+WIKI_INTERVAL = 1.5
+WIKI_CAP = 60                    # 通常実行1回あたりの連鎖試行数上限(1試行=最大3リクエスト)
+WIKI_RECHECK_DAYS = 180
+WIKI_GAME_TYPES = {"Q7889", "Q116680"}  # video game, expansion pack
+_last_wiki_req = [0.0]
+
+
+def wiki_get(url):
+    wait = WIKI_INTERVAL - (time.monotonic() - _last_wiki_req[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last_wiki_req[0] = time.monotonic()
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "nintendo-sale-sorter/1.0 (personal tool; github.com/sotakaki/nintendo-sale-sorter)"})
+    for attempt in range(2):
+        try:
+            return json.load(urllib.request.urlopen(req, timeout=30))
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:
+                time.sleep(30)
+                continue
+            raise
+
+
+def wiki_steam_lookup(title):
+    """ja.wikipedia検索→Wikidataで検証(ビデオゲーム+ja/enラベル一致)→Steam appID or None"""
+    q = urllib.parse.urlencode({"action": "query", "list": "search", "srsearch": title,
+                                "srlimit": 2, "srnamespace": 0, "format": "json"})
+    hits = wiki_get("https://ja.wikipedia.org/w/api.php?" + q).get("query", {}).get("search", [])
+    if not hits:
+        return None
+    q = urllib.parse.urlencode({"action": "query", "titles": hits[0]["title"],
+                                "prop": "pageprops", "ppprop": "wikibase_item",
+                                "redirects": 1, "format": "json"})
+    qid = None
+    for p in wiki_get("https://ja.wikipedia.org/w/api.php?" + q).get("query", {}).get("pages", {}).values():
+        qid = (p.get("pageprops") or {}).get("wikibase_item")
+    if not qid:
+        return None
+    q = urllib.parse.urlencode({"action": "wbgetentities", "ids": qid,
+                                "props": "claims|labels|aliases", "format": "json"})
+    ent = wiki_get("https://www.wikidata.org/w/api.php?" + q).get("entities", {}).get(qid) or {}
+    claims = ent.get("claims", {})
+    p31 = {c["mainsnak"].get("datavalue", {}).get("value", {}).get("id")
+           for c in claims.get("P31", [])}
+    if not (p31 & WIKI_GAME_TYPES) or "P1733" not in claims:
+        return None
+    names = []
+    for lang in ("ja", "en"):
+        lb = ent.get("labels", {}).get(lang)
+        if lb:
+            names.append(lb["value"])
+        names += [a["value"] for a in ent.get("aliases", {}).get(lang, [])]
+    t = norm_name(title)
+    if not any(difflib.SequenceMatcher(None, t, norm_name(n)).ratio() >= 0.85 for n in names if n):
+        return None
+    val = claims["P1733"][0]["mainsnak"].get("datavalue", {}).get("value")
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def enrich_wiki_steam(items, steam_cache, backfill=False):
+    """Steam検索で見つからなかった日本語名タイトルをWikipedia経由でSteamに接続する。
+
+    見つけたappidはsteam_cacheに注入し、レビュー取得はenrich_steamに任せる。
+    """
+    try:
+        with open(WIKI_CACHE, encoding="utf-8") as f:
+            wcache = json.load(f)
+    except (OSError, ValueError):
+        wcache = {}
+    now = time.time()
+    day = 86400
+    budget = 10**9 if backfill else WIKI_CAP
+    tried = found = 0
+    try:
+        for it in items:
+            sc = steam_cache.get(it["id"])
+            if sc is None or sc.get("appid") is not None:
+                continue  # Steam未照会 or 照会済みでマッチあり → 対象外
+            if not re.search(r"[ぁ-ゖァ-ヺ一-鿿]", it["n"]):
+                continue  # 英語名タイトルはSteam直接検索で十分
+            w = wcache.get(it["id"])
+            if w is not None and (w.get("steam") is not None
+                                  or now - w.get("checked", 0) < WIKI_RECHECK_DAYS * day):
+                continue
+            if budget <= 0:
+                continue
+            budget -= 1
+            tried += 1
+            try:
+                appid = wiki_steam_lookup(it["n"])
+            except Exception as e:
+                log.warning("wiki lookup failed for %r: %s", it["n"], e)
+                continue
+            wcache[it["id"]] = {"steam": appid, "checked": now}
+            if appid:
+                found += 1
+                steam_cache[it["id"]] = {"appid": appid, "checked": now,
+                                         "rev": None, "rev_at": 0, "via": "wiki"}
+    finally:
+        tmp = WIKI_CACHE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(wcache, f, ensure_ascii=False)
+        os.replace(tmp, WIKI_CACHE)
+        log.info("wiki-steam: tried=%d found=%d cached=%d", tried, found, len(wcache))
+
+
 # ---------------------------------------------------------------- PSN
 _last_psn_req = [0.0]
 
@@ -523,6 +635,11 @@ def enrich_steam(items, backfill=False):
             cache = json.load(f)
     except (OSError, ValueError):
         cache = {}
+    try:
+        # Steam検索で見つからなかった日本語名タイトルをWikipedia経由で補完
+        enrich_wiki_steam(items, cache, backfill=backfill)
+    except Exception:
+        log.exception("wiki-steam failed; continuing")
     now = time.time()
     day = 86400
     search_budget = 10**9 if backfill else STEAM_SEARCH_CAP
