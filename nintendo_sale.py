@@ -219,6 +219,139 @@ def update_price_history(items):
              len(hist), sum(1 for i in items if i.get("nl") == 1))
 
 
+# ---------------------------------------------------------------- IGDB→Steam補完
+# 方式: 日本語名(ja-JPローカライズ+別名)→Steam appIDの対応表をバルク構築して
+# igdb_ja_map.json にコミットし、日々の照合はローカルで行う(API呼び出しゼロ)。
+# 対応表の再構築は --steam-backfill 時のみ(約5分)。
+IGDB_MAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "igdb_ja_map.json")
+IGDB_CREDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".igdb_credentials")
+IGDB_INTERVAL = 0.35             # IGDBは4req/秒まで許容
+_last_igdb_req = [0.0]
+
+
+def igdb_creds():
+    cid = os.environ.get("IGDB_CLIENT_ID", "").strip()
+    sec = os.environ.get("IGDB_CLIENT_SECRET", "").strip()
+    if cid and sec:
+        return cid, sec
+    try:
+        with open(IGDB_CREDS_FILE, encoding="utf-8") as f:
+            parts = f.read().split()
+        return parts[0], parts[1]
+    except (OSError, IndexError):
+        return None, None
+
+
+def igdb_token(cid, sec):
+    data = urllib.parse.urlencode({"client_id": cid, "client_secret": sec,
+                                   "grant_type": "client_credentials"}).encode()
+    status, _, body = http("https://id.twitch.tv/oauth2/token", data=data)
+    if status != 200:
+        log.warning("igdb: token failed %s", status)
+        return None
+    return json.loads(body)["access_token"]
+
+
+def igdb_query(cid, token, endpoint, body):
+    wait = IGDB_INTERVAL - (time.monotonic() - _last_igdb_req[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last_igdb_req[0] = time.monotonic()
+    req = urllib.request.Request(
+        "https://api.igdb.com/v4/" + endpoint, data=body.encode("utf-8"),
+        headers={"Client-ID": cid, "Authorization": "Bearer " + token,
+                 "Accept": "application/json", "User-Agent": UA})
+    return json.load(urllib.request.urlopen(req, timeout=60))
+
+
+def _igdb_page_all(cid, token, endpoint, fields, where=""):
+    """idカーソルで全行取得"""
+    rows, last_id = [], 0
+    while True:
+        w = f"where id > {last_id}" + (f" & ({where})" if where else "")
+        batch = igdb_query(cid, token, endpoint,
+                           f"fields {fields}; {w}; sort id asc; limit 500;")
+        if not batch:
+            return rows
+        rows += batch
+        last_id = batch[-1]["id"]
+
+
+def build_igdb_map():
+    """IGDBの日本語名→Steam appID対応表を構築して IGDB_MAP に保存する"""
+    cid, sec = igdb_creds()
+    if not cid:
+        log.info("igdb: no credentials, skipping map build")
+        return
+    token = igdb_token(cid, sec)
+    if not token:
+        return
+    # 1) 日本語名→game id 候補を収集 (ja-JPローカライズ + 日本語文字を含む別名)
+    name_games = {}
+    jp = re.compile(r"[ぁ-ゖァ-ヺ一-鿿]")
+    rows = _igdb_page_all(cid, token, "game_localizations", "name, game", "region = 3")
+    log.info("igdb map: localizations=%d", len(rows))
+    alts = _igdb_page_all(cid, token, "alternative_names", "name, game")
+    alts = [r for r in alts if jp.search(r.get("name") or "")]
+    log.info("igdb map: ja alternative_names=%d", len(alts))
+    for r in rows + alts:
+        nm, g = norm_name(r.get("name") or ""), r.get("game")
+        if nm and g:
+            name_games.setdefault(nm, set()).add(g)
+    # 2) 関係するgame idのSteam appIDをバッチ解決
+    gids = sorted({g for gs in name_games.values() for g in gs})
+    steam_of = {}
+    for i in range(0, len(gids), 400):
+        chunk = gids[i:i + 400]
+        rs = igdb_query(cid, token, "external_games",
+                        "fields game, uid; where game = (%s) & external_game_source = 1; limit 500;"
+                        % ",".join(map(str, chunk)))
+        for r in rs:
+            uid = r.get("uid")
+            try:
+                steam_of[r["game"]] = int(uid)
+            except (TypeError, ValueError):
+                continue
+    # 3) 正規化名→appid (曖昧な名前=複数ゲームで異なるappidに割れるものは捨てる)
+    out = {}
+    for nm, gs in name_games.items():
+        apps = {steam_of[g] for g in gs if g in steam_of}
+        if len(apps) == 1:
+            out[nm] = apps.pop()
+    tmp = IGDB_MAP + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False)
+    os.replace(tmp, IGDB_MAP)
+    log.info("igdb map: built %d ja-name->steam entries", len(out))
+
+
+def enrich_igdb_steam(items, steam_cache, backfill=False):
+    """igdb_ja_map.json(日本語名→Steam appID)でローカル照合し、steam_cacheに注入する"""
+    if backfill:
+        try:
+            build_igdb_map()
+        except Exception:
+            log.exception("igdb map build failed; using existing map")
+    try:
+        with open(IGDB_MAP, encoding="utf-8") as f:
+            jamap = json.load(f)
+    except (OSError, ValueError):
+        log.info("igdb: no map file, skipping")
+        return
+    now = time.time()
+    found = 0
+    for it in items:
+        sc = steam_cache.get(it["id"])
+        if sc is None or sc.get("appid") is not None:
+            continue
+        appid = jamap.get(norm_name(it["n"]))
+        if appid:
+            found += 1
+            steam_cache[it["id"]] = {"appid": appid, "checked": now,
+                                     "rev": None, "rev_at": 0, "via": "igdb"}
+    log.info("igdb-steam: map=%d found=%d", len(jamap), found)
+
+
 # ---------------------------------------------------------------- Wikipedia→Steam補完
 WIKI_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wiki_cache.json")
 WIKI_INTERVAL = 1.5
@@ -298,8 +431,12 @@ def enrich_wiki_steam(items, steam_cache, backfill=False):
     day = 86400
     budget = 10**9 if backfill else WIKI_CAP
     tried = found = 0
+    consecutive_fails = 0
     try:
         for it in items:
+            if consecutive_fails >= 5:
+                log.warning("wiki: 5 consecutive failures (rate limited?), aborting this run")
+                break
             sc = steam_cache.get(it["id"])
             if sc is None or sc.get("appid") is not None:
                 continue  # Steam未照会 or 照会済みでマッチあり → 対象外
@@ -315,8 +452,10 @@ def enrich_wiki_steam(items, steam_cache, backfill=False):
             tried += 1
             try:
                 appid = wiki_steam_lookup(it["n"])
+                consecutive_fails = 0
             except Exception as e:
                 log.warning("wiki lookup failed for %r: %s", it["n"], e)
+                consecutive_fails += 1
                 continue
             wcache[it["id"]] = {"steam": appid, "checked": now}
             if appid:
@@ -636,7 +775,12 @@ def enrich_steam(items, backfill=False):
     except (OSError, ValueError):
         cache = {}
     try:
-        # Steam検索で見つからなかった日本語名タイトルをWikipedia経由で補完
+        # Steam検索で見つからなかった日本語名タイトルをIGDBの地域別名で補完
+        enrich_igdb_steam(items, cache, backfill=backfill)
+    except Exception:
+        log.exception("igdb-steam failed; continuing")
+    try:
+        # IGDBでも残った日本語名タイトルをWikipedia経由で補完
         enrich_wiki_steam(items, cache, backfill=backfill)
     except Exception:
         log.exception("wiki-steam failed; continuing")

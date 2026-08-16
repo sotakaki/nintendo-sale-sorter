@@ -2,3 +2,4 @@ __pycache__/
 *.log
 *.tmp
 .psn_npsso
+.igdb_credentials
