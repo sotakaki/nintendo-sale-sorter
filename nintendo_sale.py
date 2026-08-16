@@ -841,9 +841,21 @@ TEMPLATE = """<!doctype html>
 }
 * { box-sizing:border-box; margin:0; padding:0; }
 body { font-family:"Hiragino Sans","Yu Gothic UI","Noto Sans JP",sans-serif; background:var(--bg); color:var(--text); }
-header { position:sticky; top:0; z-index:10; background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+header { position:sticky; top:0; z-index:10; background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; flex-direction:column; gap:8px; transition:transform .2s ease; }
+header.hide { transform:translateY(-100%); }
+.hrow { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+#controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+#ftoggle { display:none; font-size:13px; padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); cursor:pointer; }
+#ftoggle.on { border-color:var(--accent); color:var(--accent); }
+@media (max-width:640px) {
+  #ftoggle { display:inline-block; margin-left:auto; }
+  input[type=search] { flex:1; min-width:120px; width:auto; }
+  #controls { display:none; }
+  #controls.open { display:flex; }
+}
 header h1 { font-size:15px; margin-right:auto; }
 header h1 small { color:var(--sub); font-weight:normal; margin-left:8px; }
+@media (max-width:640px) { header h1 { width:100%; margin-right:0; } header h1 small { display:block; margin-left:0; font-size:10px; } }
 select, input[type=search] { font-size:13px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); }
 input[type=search] { width:180px; }
 #grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:12px; padding:16px; max-width:1400px; margin:0 auto; }
@@ -881,9 +893,13 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 </style>
 </head>
 <body>
-<header>
-  <h1>ニンテンドーストア セール<small>値引き率順 / %NOW% 取得</small></h1>
-  <input type="search" id="q" placeholder="タイトル検索">
+<header id="hd">
+  <div class="hrow">
+    <h1>ニンテンドーストア セール<small>値引き率順 / %NOW% 取得</small></h1>
+    <input type="search" id="q" placeholder="タイトル検索">
+    <button id="ftoggle" type="button">絞り込み</button>
+  </div>
+  <div id="controls">
   <select id="minpct">
     <option value="0">すべての値引き率</option>
     <option value="30">30%OFF以上</option>
@@ -922,6 +938,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
   <label class="chk"><input type="checkbox" id="gconly">カタログレビューあり</label>
   <label class="chk"><input type="checkbox" id="psnonly">PSレビューあり</label>
   <label class="chk"><input type="checkbox" id="newlowonly">過去最安のみ</label>
+  </div>
 </header>
 <div id="count"></div>
 <div id="grid"></div>
@@ -1011,7 +1028,29 @@ grid.addEventListener('click', function(e) {
 });
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 q.addEventListener('input', render);
-[minpct, maxprice, sortSel, steamOnly, gcOnly, psnOnly, newLowOnly, minSteam, minPs].forEach(function(el){ el.addEventListener('change', render); });
+[minpct, maxprice, sortSel, steamOnly, gcOnly, psnOnly, newLowOnly, minSteam, minPs].forEach(function(el){ el.addEventListener('change', function(){ render(); updateFtoggle(); }); });
+// モバイル: 絞り込みの開閉と適用数バッジ
+var ftoggle = document.getElementById('ftoggle'), controls = document.getElementById('controls');
+ftoggle.addEventListener('click', function(){ controls.classList.toggle('open'); });
+function updateFtoggle() {
+  var n = 0;
+  if (+minpct.value > 0) n++;
+  if (maxprice.value) n++;
+  if (+minSteam.value > 0) n++;
+  if (+minPs.value > 0) n++;
+  [steamOnly, gcOnly, psnOnly, newLowOnly].forEach(function(c){ if (c.checked) n++; });
+  ftoggle.textContent = n ? '絞り込み(' + n + ')' : '絞り込み';
+  ftoggle.classList.toggle('on', n > 0);
+}
+// 下スクロールでヘッダーを隠し、上スクロールで出す
+var hd = document.getElementById('hd'), lastY = 0;
+window.addEventListener('scroll', function(){
+  var y = window.scrollY;
+  if (y > lastY + 5 && y > 120) { hd.classList.add('hide'); controls.classList.remove('open'); }
+  else if (y < lastY - 5) { hd.classList.remove('hide'); }
+  lastY = y;
+}, {passive: true});
+updateFtoggle();
 render();
 </script>
 </body>
