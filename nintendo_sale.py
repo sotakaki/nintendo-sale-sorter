@@ -899,11 +899,24 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
     <option value="2000">〜2,000円</option>
     <option value="3000">〜3,000円</option>
   </select>
+  <select id="minsteam">
+    <option value="0">Steam評価指定なし</option>
+    <option value="70">Steam 70%以上</option>
+    <option value="80">Steam 80%以上</option>
+    <option value="90">Steam 90%以上</option>
+  </select>
+  <select id="minps">
+    <option value="0">PS評価指定なし</option>
+    <option value="3.5">PS ★3.5以上</option>
+    <option value="4">PS ★4.0以上</option>
+    <option value="4.5">PS ★4.5以上</option>
+  </select>
   <select id="sort">
     <option value="pct">値引き率が高い順</option>
     <option value="plow">価格が安い順</option>
     <option value="phigh">価格が高い順</option>
     <option value="steam">Steam好評率順</option>
+    <option value="ps">PS評価順</option>
   </select>
   <label class="chk"><input type="checkbox" id="steamonly">Steamレビューあり</label>
   <label class="chk"><input type="checkbox" id="gconly">カタログレビューあり</label>
@@ -917,7 +930,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
 var grid = document.getElementById('grid'), count = document.getElementById('count');
-var q = document.getElementById('q'), minpct = document.getElementById('minpct'), maxprice = document.getElementById('maxprice'), sortSel = document.getElementById('sort'), steamOnly = document.getElementById('steamonly'), gcOnly = document.getElementById('gconly'), psnOnly = document.getElementById('psnonly'), newLowOnly = document.getElementById('newlowonly');
+var q = document.getElementById('q'), minpct = document.getElementById('minpct'), maxprice = document.getElementById('maxprice'), sortSel = document.getElementById('sort'), steamOnly = document.getElementById('steamonly'), gcOnly = document.getElementById('gconly'), psnOnly = document.getElementById('psnonly'), newLowOnly = document.getElementById('newlowonly'), minSteam = document.getElementById('minsteam'), minPs = document.getElementById('minps');
 function yen(n) { return n == null ? '' : n.toLocaleString('ja-JP') + '円'; }
 function render() {
   var kw = q.value.trim().toLowerCase();
@@ -929,6 +942,8 @@ function render() {
     if (gcOnly.checked && !d.gv) return false;
     if (psnOnly.checked && d.pv == null) return false;
     if (newLowOnly.checked && !d.nl) return false;
+    if (+minSteam.value > 0 && (d.sp == null || d.sp < +minSteam.value)) return false;
+    if (+minPs.value > 0 && (d.pv == null || d.pv < +minPs.value)) return false;
     if (kw && d.n.toLowerCase().indexOf(kw) < 0 && d.mk.toLowerCase().indexOf(kw) < 0) return false;
     return true;
   });
@@ -936,6 +951,7 @@ function render() {
   list.sort(s === 'plow' ? function(a,b){ return (a.p||1e9)-(b.p||1e9) || b.pct-a.pct; }
     : s === 'phigh' ? function(a,b){ return (b.p||0)-(a.p||0) || b.pct-a.pct; }
     : s === 'steam' ? function(a,b){ return (b.sp==null?-1:b.sp)-(a.sp==null?-1:a.sp) || (b.sn||0)-(a.sn||0) || b.pct-a.pct; }
+    : s === 'ps' ? function(a,b){ return (b.pv==null?-1:b.pv)-(a.pv==null?-1:a.pv) || (b.pn||0)-(a.pn||0) || b.pct-a.pct; }
     : function(a,b){ return b.pct-a.pct || (a.p||1e9)-(b.p||1e9); });
   count.textContent = list.length.toLocaleString('ja-JP') + '件';
   var html = list.map(function(d) {
@@ -995,7 +1011,7 @@ grid.addEventListener('click', function(e) {
 });
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 q.addEventListener('input', render);
-[minpct, maxprice, sortSel, steamOnly, gcOnly, psnOnly, newLowOnly].forEach(function(el){ el.addEventListener('change', render); });
+[minpct, maxprice, sortSel, steamOnly, gcOnly, psnOnly, newLowOnly, minSteam, minPs].forEach(function(el){ el.addEventListener('change', render); });
 render();
 </script>
 </body>
