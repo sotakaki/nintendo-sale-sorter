@@ -888,6 +888,11 @@ input[type=search] { width:180px; }
 .psn:hover { text-decoration:underline; }
 .psn .sale { color:var(--accent); font-weight:600; }
 @media (prefers-color-scheme: dark) { .psn { color:#5c9ded; } }
+.amz { font-size:10px; margin-top:4px; cursor:pointer; color:#b26a00; border:1px solid currentColor; border-radius:6px; padding:2px 6px; align-self:flex-start; }
+.amz:hover { background:rgba(178,106,0,.08); }
+.amz .prtag { font-size:8px; border:1px solid currentColor; border-radius:3px; padding:0 2px; margin-left:4px; vertical-align:1px; }
+@media (prefers-color-scheme: dark) { .amz { color:#e0a34e; } }
+#affnotice { font-size:11px; color:var(--sub); padding:8px 16px 0; max-width:1400px; margin:0 auto; }
 #count { font-size:12px; color:var(--sub); padding:0 16px; max-width:1400px; margin:12px auto 0; }
 footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 </style>
@@ -940,12 +945,14 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
   <label class="chk"><input type="checkbox" id="newlowonly">過去最安のみ</label>
   </div>
 </header>
+%AFFNOTICE%
 <div id="count"></div>
 <div id="grid"></div>
 <footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>「カタログ」は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
 <script>
 var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
+var AFF_TAG = "%AFFTAG%";
 var grid = document.getElementById('grid'), count = document.getElementById('count');
 var q = document.getElementById('q'), minpct = document.getElementById('minpct'), maxprice = document.getElementById('maxprice'), sortSel = document.getElementById('sort'), steamOnly = document.getElementById('steamonly'), gcOnly = document.getElementById('gconly'), psnOnly = document.getElementById('psnonly'), newLowOnly = document.getElementById('newlowonly'), minSteam = document.getElementById('minsteam'), minPs = document.getElementById('minps');
 function yen(n) { return n == null ? '' : n.toLocaleString('ja-JP') + '円'; }
@@ -983,6 +990,7 @@ function render() {
       + gcBadge(d)
       + steamBadge(d)
       + psnBadge(d)
+      + amazonBadge(d)
       + '</div></a>';
   }).join('');
   grid.innerHTML = html;
@@ -992,6 +1000,10 @@ function lowBadge(d) {
   if (d.nl === 2) return '<div class="low tie">過去最安 (' + d.hd.slice(2).replace(/-/g, '/') + '〜)</div>';
   if (d.hm != null && d.hm < d.p) return '<div class="low was">過去最安 ' + yen(d.hm) + ' (' + d.hd.slice(2).replace(/-/g, '/') + ')</div>';
   return '';
+}
+function amazonBadge(d) {
+  if (!AFF_TAG) return '';
+  return '<div class="amz" data-q="' + esc(d.n) + '">Amazonで探す<span class="prtag">PR</span></div>';
 }
 function psnBadge(d) {
   if (d.pv == null) return '';
@@ -1014,12 +1026,14 @@ function steamBadge(d) {
   return '<div class="stm ' + cls + '" data-app="' + d.sa + '">Steam ' + d.sp + '%好評・' + d.sn.toLocaleString('ja-JP') + '件</div>';
 }
 grid.addEventListener('click', function(e) {
-  var b = e.target.closest('.stm, .gc, .psn');
+  var b = e.target.closest('.stm, .gc, .psn, .amz');
   if (!b) return;
   var url = b.classList.contains('stm')
     ? 'https://store.steampowered.com/app/' + b.getAttribute('data-app') + '/'
     : b.classList.contains('psn')
     ? (b.getAttribute('data-pid') ? 'https://store.playstation.com/ja-jp/product/' + b.getAttribute('data-pid') : null)
+    : b.classList.contains('amz')
+    ? 'https://www.amazon.co.jp/s?k=' + encodeURIComponent(b.getAttribute('data-q') + ' switch') + '&tag=' + AFF_TAG
     : b.getAttribute('data-gu');
   if (!url) return;
   e.preventDefault();
@@ -1053,9 +1067,31 @@ window.addEventListener('scroll', function(){
 updateFtoggle();
 render();
 </script>
+%RESIZER%
 </body>
 </html>
 """
+
+AFF_NOTICE_HTML = ('<div id="affnotice">【PR】本ページ内の「Amazonで探す」リンクは'
+                   'アフィリエイト広告です。購入により当サイト運営者に紹介料が支払われる場合があります。</div>')
+
+RESIZER_HTML = """<script>
+// iframe埋め込み時に親ページへ高さを通知する(テクノエッジ埋め込み用)
+(function() {
+  if (window.parent === window) return;
+  var last = 0;
+  function post() {
+    var h = document.body.scrollHeight;
+    if (Math.abs(h - last) > 4) {
+      last = h;
+      window.parent.postMessage({type: 'nss-resize', height: h}, '*');
+    }
+  }
+  new ResizeObserver(post).observe(document.body);
+  window.addEventListener('load', post);
+  setInterval(post, 1500);
+})();
+</script>"""
 
 
 def build_html(items):
@@ -1080,11 +1116,17 @@ def build_html(items):
                 d["pp"], d["pb"] = it["pp"], it.get("pb")
         data.append(d)
     now = time.strftime("%Y-%m-%d %H:%M")
+    # --techno-edge: Amazonアフィリエイトリンク+PR表記+iframeリサイズ通知を有効化
+    te_mode = "--techno-edge" in sys.argv
+    aff_tag = os.environ.get("AMAZON_TAG", "technoedge-22") if te_mode else ""
     html = (TEMPLATE
             .replace("%DATA%", json.dumps(data, ensure_ascii=False, separators=(",", ":")))
             .replace("%IMGPREFIX%", IMG_PREFIX)
             .replace("%NOW%", now)
-            .replace("%COUNT%", str(len(data))))
+            .replace("%COUNT%", str(len(data)))
+            .replace("%AFFTAG%", aff_tag)
+            .replace("%AFFNOTICE%", AFF_NOTICE_HTML if te_mode else "")
+            .replace("%RESIZER%", RESIZER_HTML if te_mode else ""))
     tmp = OUT_HTML + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(html)
