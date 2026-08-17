@@ -1019,10 +1019,19 @@ function render() {
     : s === 'ps' ? function(a,b){ return (b.pv==null?-1:b.pv)-(a.pv==null?-1:a.pv) || (b.pn||0)-(a.pn||0) || b.pct-a.pct; }
     : function(a,b){ return b.pct-a.pct || (a.p||1e9)-(b.p||1e9); });
   count.textContent = list.length.toLocaleString('ja-JP') + '件';
-  var html = list.map(function(d) {
+  var html = buildCards(list);
+  grid.innerHTML = html;
+  observeLazy();
+}
+function buildCards(list) {
+  return list.map(function(d) {
     var orig = (!d.mx && d.p != null && d.pct < 100) ? Math.round(d.p / (1 - d.pct/100)) : null;
     return '<a class="card" href="https://store-jp.nintendo.com/item/software/D' + d.id + '" target="_blank" rel="noopener">'
-      + (d.im ? '<img loading="lazy" src="' + IMG + d.im + '?sw=346&strip=false" alt="">' : '<div style="aspect-ratio:1;background:#ddd"></div>')
+      + (d.im
+         ? (AFF_TAG
+            ? '<img class="lz" data-src="' + IMG + d.im + '?sw=346&strip=false" alt="">'
+            : '<img loading="lazy" src="' + IMG + d.im + '?sw=346&strip=false" alt="">')
+         : '<div style="aspect-ratio:1;background:#ddd"></div>')
       + '<div class="b"><div class="n">' + esc(d.n) + '</div><div class="mk">' + esc(d.mk) + '</div>'
       + '<div class="row"><span class="off">' + (d.mx ? '<small>最大</small>' : '') + d.pct + '<small>%OFF</small></span>'
       + '<span class="pr"><b>' + yen(d.p) + '</b>' + (d.mx ? '〜' : '') + '</span></div>'
@@ -1034,8 +1043,46 @@ function render() {
       + amazonBadge(d)
       + '</div></a>';
   }).join('');
-  grid.innerHTML = html;
 }
+// iframe埋め込みだと標準のloading="lazy"やIntersectionObserverが発火しないことがあるため、
+// TEモードはスクロール位置ベースの自前遅延読み込み(同一オリジンなら親のスクロールを直接監視)
+var lazyList = [];
+function observeLazy() {
+  lazyList = Array.prototype.map.call(grid.querySelectorAll('img.lz'), function(el) {
+    return {el: el, top: el.getBoundingClientRect().top + window.scrollY};
+  });
+  updateLazy();
+}
+function updateLazy() {
+  if (!lazyList.length) return;
+  var start, end, MARGIN = 900;
+  var fe = null;
+  try { fe = window.frameElement; } catch (e) {}
+  if (fe) {
+    var r = fe.getBoundingClientRect();
+    var vh = window.top.innerHeight;
+    start = -r.top - MARGIN;
+    end = -r.top + vh + MARGIN;
+  } else {
+    start = window.scrollY - MARGIN;
+    end = window.scrollY + window.innerHeight + MARGIN;
+  }
+  lazyList = lazyList.filter(function(o) {
+    if (o.top >= start && o.top <= end) {
+      o.el.src = o.el.getAttribute('data-src');
+      o.el.classList.remove('lz');
+      return false;
+    }
+    return true;
+  });
+}
+(function() {
+  var scrollTarget = window;
+  try { if (window.frameElement) scrollTarget = window.top; } catch (e) {}
+  try { scrollTarget.addEventListener('scroll', updateLazy, {passive: true}); } catch (e) {}
+  try { scrollTarget.addEventListener('resize', updateLazy, {passive: true}); } catch (e) {}
+  setInterval(updateLazy, 1200);  // 保険(スクロールイベントを取り逃した場合)
+})();
 function lowBadge(d) {
   if (d.nl === 1) return '<div class="low new">過去最安更新 (前回 ' + yen(d.hm) + ')</div>';
   if (d.nl === 2) return '<div class="low tie">過去最安 (' + d.hd.slice(2).replace(/-/g, '/') + '〜)</div>';
@@ -1141,7 +1188,9 @@ select, input[type=search] { border-radius:4px; background:#fff; color:#1f2346; 
 </style>"""
 
 RESIZER_HTML = """<script>
-// iframe埋め込み時に親ページへ高さを通知する(テクノエッジ埋め込み用)
+// iframe埋め込み時の高さ調整(テクノエッジ埋め込み用)
+// 同一ドメイン設置なら window.frameElement で自分のiframeを直接リサイズできる
+// (親ページへのスクリプト追加が不要)。別ドメインの場合はpostMessageで通知する。
 (function() {
   if (window.parent === window) return;
   var last = 0;
@@ -1149,6 +1198,12 @@ RESIZER_HTML = """<script>
     var h = document.body.scrollHeight;
     if (Math.abs(h - last) > 4) {
       last = h;
+      try {
+        if (window.frameElement) {
+          window.frameElement.style.height = h + 'px';
+          return;
+        }
+      } catch (e) {}
       window.parent.postMessage({type: 'nss-resize', height: h}, '*');
     }
   }
