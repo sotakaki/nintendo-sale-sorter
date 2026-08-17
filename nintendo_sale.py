@@ -873,7 +873,7 @@ TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ニンテンドーストア セール 値引き率順 (%COUNT%件 / %NOW%取得)</title>
+%TEMETA%<title>ニンテンドーストア セール 値引き率順 (%COUNT%件 / %NOW%取得)</title>
 <style>
 :root { --bg:#f5f5f7; --card:#fff; --text:#1d1d1f; --sub:#6e6e73; --accent:#e60012; --line:#e3e3e6; }
 @media (prefers-color-scheme: dark) {
@@ -1047,8 +1047,25 @@ function buildCards(list) {
 // iframe埋め込みだと標準のloading="lazy"やIntersectionObserverが発火しないことがあるため、
 // TEモードはスクロール位置ベースの自前遅延読み込み(同一オリジンなら親のスクロールを直接監視)
 var lazyList = [];
+function lazyMode() {
+  // same-frame: 同一ドメインiframe(親スクロール連動) / cross-frame: 別ドメインiframe(ブラウザ標準lazyに委譲) / standalone: 直接表示
+  if (window.parent === window) return 'standalone';
+  try { if (window.frameElement) return 'same-frame'; } catch (e) {}
+  return 'cross-frame';
+}
 function observeLazy() {
-  lazyList = Array.prototype.map.call(grid.querySelectorAll('img.lz'), function(el) {
+  var imgs = grid.querySelectorAll('img.lz');
+  if (lazyMode() === 'cross-frame') {
+    // 別ドメインiframeでは親スクロールを参照できないため、ブラウザ標準の遅延読み込みに任せる
+    imgs.forEach(function(el) {
+      el.loading = 'lazy';
+      el.src = el.getAttribute('data-src');
+      el.classList.remove('lz');
+    });
+    lazyList = [];
+    return;
+  }
+  lazyList = Array.prototype.map.call(imgs, function(el) {
     return {el: el, top: el.getBoundingClientRect().top + window.scrollY};
   });
   updateLazy();
@@ -1214,7 +1231,8 @@ RESIZER_HTML = """<script>
 </script>"""
 
 
-def build_html(items):
+def build_html(items, te_mode=False, out_path=None):
+    out_file = out_path or OUT_HTML
     data = []
     for it in items:
         d = {k: it[k] for k in ("id", "n", "p", "pct", "mx", "mk", "im")}
@@ -1238,8 +1256,7 @@ def build_html(items):
             d["az"] = it["az"]
         data.append(d)
     now = time.strftime("%Y-%m-%d %H:%M")
-    # --techno-edge: Amazonアフィリエイトリンク+PR表記+iframeリサイズ通知を有効化
-    te_mode = "--techno-edge" in sys.argv
+    # te_mode: Amazonアフィリエイトリンク+PR表記+テクノエッジのトンマナ+iframeリサイズを有効化
     aff_tag = os.environ.get("AMAZON_TAG", "technoedge-22") if te_mode else ""
     html = (TEMPLATE
             .replace("%DATA%", json.dumps(data, ensure_ascii=False, separators=(",", ":")))
@@ -1247,14 +1264,15 @@ def build_html(items):
             .replace("%NOW%", now)
             .replace("%COUNT%", str(len(data)))
             .replace("%AFFTAG%", aff_tag)
+            .replace("%TEMETA%", '<meta name="robots" content="noindex">\n' if te_mode else "")
             .replace("%AFFNOTICE%", AFF_NOTICE_HTML if te_mode else "")
             .replace("%TETHEME%", TE_THEME_CSS if te_mode else "")
             .replace("%RESIZER%", RESIZER_HTML if te_mode else ""))
-    tmp = OUT_HTML + ".tmp"
+    tmp = out_file + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(html)
-    os.replace(tmp, OUT_HTML)
-    log.info("written %s (%d items)", OUT_HTML, len(data))
+    os.replace(tmp, out_file)
+    log.info("written %s (%d items%s)", out_file, len(data), ", techno-edge" if te_mode else "")
 
 
 def main():
@@ -1274,9 +1292,13 @@ def main():
             enrich_psn(items, backfill=backfill)
         except Exception:
             log.exception("psn enrich failed; continuing without fresh psn data")
-        if "--techno-edge" in sys.argv:
+        te_flag = "--techno-edge" in sys.argv
+        te_out = os.environ.get("NINTENDO_SALE_TE_OUT", "").strip()
+        if te_flag or te_out:
             enrich_amazon(items)
-        build_html(items)
+        build_html(items, te_mode=te_flag)
+        if te_out and not te_flag:
+            build_html(items, te_mode=True, out_path=te_out)
     except Exception:
         log.exception("failed")
         sys.exit(1)
