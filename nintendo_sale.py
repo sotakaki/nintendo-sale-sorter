@@ -224,6 +224,7 @@ def update_price_history(items):
 # igdb_ja_map.json にコミットし、日々の照合はローカルで行う(API呼び出しゼロ)。
 # 対応表の再構築は --steam-backfill 時のみ(約5分)。
 IGDB_MAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "igdb_ja_map.json")
+IGDB_ASIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "igdb_asin.json")
 IGDB_CREDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".igdb_credentials")
 IGDB_INTERVAL = 0.35             # IGDBは4req/秒まで許容
 _last_igdb_req = [0.0]
@@ -298,8 +299,16 @@ def build_igdb_map():
         nm, g = norm_name(r.get("name") or ""), r.get("game")
         if nm and g:
             name_games.setdefault(nm, set()).add(g)
-    # 2) 関係するgame idのSteam appIDをバッチ解決
-    gids = sorted({g for gs in name_games.values() for g in gs})
+    # 2) 日本のSwitch向けAmazon ASIN (source=20, platform=130, countries含む392)
+    arows = _igdb_page_all(cid, token, "external_games", "game, uid, countries",
+                           "external_game_source = 20 & platform = 130")
+    asin_of = {}
+    for r in arows:
+        if 392 in (r.get("countries") or []) and r.get("uid"):
+            asin_of.setdefault(r["game"], r["uid"])
+    log.info("igdb map: jp switch asins=%d", len(asin_of))
+    # 3) 関係するgame idのSteam appIDをバッチ解決 (名前マップ由来 + ASIN保有ゲーム)
+    gids = sorted({g for gs in name_games.values() for g in gs} | set(asin_of))
     steam_of = {}
     for i in range(0, len(gids), 400):
         chunk = gids[i:i + 400]
@@ -312,7 +321,7 @@ def build_igdb_map():
                 steam_of[r["game"]] = int(uid)
             except (TypeError, ValueError):
                 continue
-    # 3) 正規化名→appid (曖昧な名前=複数ゲームで異なるappidに割れるものは捨てる)
+    # 4) 正規化名→appid (曖昧な名前=複数ゲームで異なるappidに割れるものは捨てる)
     out = {}
     for nm, gs in name_games.items():
         apps = {steam_of[g] for g in gs if g in steam_of}
@@ -323,6 +332,18 @@ def build_igdb_map():
         json.dump(out, f, ensure_ascii=False)
     os.replace(tmp, IGDB_MAP)
     log.info("igdb map: built %d ja-name->steam entries", len(out))
+    # 5) ASINマップ: 日本語名→ASIN と steam appid→ASIN の両引き
+    by_name = {}
+    for nm, gs in name_games.items():
+        asins = {asin_of[g] for g in gs if g in asin_of}
+        if len(asins) == 1:
+            by_name[nm] = asins.pop()
+    by_steam = {str(steam_of[g]): a for g, a in asin_of.items() if g in steam_of}
+    tmp = IGDB_ASIN + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"by_name": by_name, "by_steam": by_steam}, f, ensure_ascii=False)
+    os.replace(tmp, IGDB_ASIN)
+    log.info("igdb map: asin by_name=%d by_steam=%d", len(by_name), len(by_steam))
 
 
 def enrich_igdb_steam(items, steam_cache, backfill=False):
@@ -670,6 +691,24 @@ def enrich_psn(items, backfill=False):
                  searched, refreshed, matched, len(items), len(cache), bool(token))
 
 
+def enrich_amazon(items):
+    """IGDB由来のASINマップで日本のAmazon商品直リンクを付与(テクノエッジ版用)"""
+    try:
+        with open(IGDB_ASIN, encoding="utf-8") as f:
+            amap = json.load(f)
+    except (OSError, ValueError):
+        log.info("amazon: no asin map, all links will fall back to search")
+        return
+    by_name, by_steam = amap.get("by_name", {}), amap.get("by_steam", {})
+    found = 0
+    for it in items:
+        az = by_steam.get(str(it.get("appid") or "")) or by_name.get(norm_name(it["n"]))
+        if az:
+            it["az"] = az
+            found += 1
+    log.info("amazon: direct asin links=%d/%d", found, len(items))
+
+
 GC_VERDICT_DISPLAY = {"良": "良作", "良*": "良作*", "ク": "クソゲー", "賛否": "賛否両論",
                       "なし": "普通", "なし*": "普通*"}
 
@@ -805,6 +844,7 @@ def enrich_steam(items, backfill=False):
                     cache[it["id"]] = c
             if not c or c.get("appid") is None:
                 continue
+            it["appid"] = c["appid"]  # ASIN解決(enrich_amazon)用
             # 2) レビュー取得/更新
             if (c.get("rev") is None or now - c.get("rev_at", 0) > STEAM_REVIEW_REFRESH_DAYS * day):
                 if review_budget > 0:
@@ -1003,6 +1043,7 @@ function lowBadge(d) {
 }
 function amazonBadge(d) {
   if (!AFF_TAG) return '';
+  if (d.az) return '<div class="amz" data-az="' + d.az + '">Amazonで見る<span class="prtag">PR</span></div>';
   return '<div class="amz" data-q="' + esc(d.n) + '">Amazonで探す<span class="prtag">PR</span></div>';
 }
 function psnBadge(d) {
@@ -1033,7 +1074,9 @@ grid.addEventListener('click', function(e) {
     : b.classList.contains('psn')
     ? (b.getAttribute('data-pid') ? 'https://store.playstation.com/ja-jp/product/' + b.getAttribute('data-pid') : null)
     : b.classList.contains('amz')
-    ? 'https://www.amazon.co.jp/s?k=' + encodeURIComponent(b.getAttribute('data-q') + ' switch') + '&tag=' + AFF_TAG
+    ? (b.getAttribute('data-az')
+       ? 'https://www.amazon.co.jp/dp/' + b.getAttribute('data-az') + '?tag=' + AFF_TAG
+       : 'https://www.amazon.co.jp/s?k=' + encodeURIComponent(b.getAttribute('data-q') + ' switch') + '&tag=' + AFF_TAG)
     : b.getAttribute('data-gu');
   if (!url) return;
   e.preventDefault();
@@ -1114,6 +1157,8 @@ def build_html(items):
                 d["pid"] = it["pid"]
             if it.get("pp") is not None:
                 d["pp"], d["pb"] = it["pp"], it.get("pb")
+        if it.get("az"):
+            d["az"] = it["az"]
         data.append(d)
     now = time.strftime("%Y-%m-%d %H:%M")
     # --techno-edge: Amazonアフィリエイトリンク+PR表記+iframeリサイズ通知を有効化
@@ -1151,6 +1196,8 @@ def main():
             enrich_psn(items, backfill=backfill)
         except Exception:
             log.exception("psn enrich failed; continuing without fresh psn data")
+        if "--techno-edge" in sys.argv:
+            enrich_amazon(items)
         build_html(items)
     except Exception:
         log.exception("failed")
