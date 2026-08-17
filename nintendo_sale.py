@@ -985,6 +985,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
   <label class="chk"><input type="checkbox" id="newlowonly">過去最安のみ</label>
   </div>
 </header>
+%TETHEME%
 %AFFNOTICE%
 <div id="count"></div>
 <div id="grid"></div>
@@ -1043,8 +1044,8 @@ function lowBadge(d) {
 }
 function amazonBadge(d) {
   if (!AFF_TAG) return '';
-  if (d.az) return '<div class="amz" data-az="' + d.az + '">Amazonで見る<span class="prtag">PR</span></div>';
-  return '<div class="amz" data-q="' + esc(d.n) + '">Amazonで探す<span class="prtag">PR</span></div>';
+  if (d.az) return '<div class="amz" data-az="' + d.az + '">Amazonで見る</div>';
+  return '<div class="amz" data-q="' + esc(d.n) + '">Amazonで探す</div>';
 }
 function psnBadge(d) {
   if (d.pv == null) return '';
@@ -1115,8 +1116,29 @@ render();
 </html>
 """
 
-AFF_NOTICE_HTML = ('<div id="affnotice">【PR】本ページ内の「Amazonで探す」リンクは'
+AFF_NOTICE_HTML = ('<div id="affnotice">【PR】本ページ内のAmazonリンクは'
                    'アフィリエイト広告です。購入により当サイト運営者に紹介料が支払われる場合があります。</div>')
+
+# テクノエッジのトンマナ (techno-edge.net から採取: ブランド青#0019FF, 本文#1F2346, 游ゴシック, 角丸4px, 常時ライト)
+TE_THEME_CSS = """<style>
+:root { --bg:#f4f5f9; --card:#fff; --text:#1f2346; --sub:#6b7089; --accent:#e60012; --line:#e2e4ef; }
+body { font-family:YuGothic,"Yu Gothic Medium","Yu Gothic","Hiragino Sans",メイリオ,Meiryo,sans-serif; background:var(--bg); color:var(--text); }
+header { background:#0019ff; border-bottom:none; }
+header h1 { color:#fff; }
+header h1 small { color:rgba(255,255,255,.75); }
+.chk { color:rgba(255,255,255,.92); }
+select, input[type=search] { border-radius:4px; background:#fff; color:#1f2346; border-color:#fff; }
+#ftoggle { border-radius:4px; background:transparent; color:#fff; border-color:rgba(255,255,255,.65); }
+#ftoggle.on { border-color:#fff; color:#fff; font-weight:700; }
+.card { border-radius:4px; }
+.card img { border-radius:0; }
+.stm.g { color:#2e7d32; } .stm.y { color:#b26a00; } .stm.r { color:#c62828; }
+.gc.good { color:#2e7d32; } .gc.mid { color:#b26a00; } .gc.bad { color:#c62828; } .gc.na { color:#6b7089; }
+.low.tie { color:#2e7d32; }
+.psn { color:#0057b8; }
+.amz { color:#0019ff; border-color:#0019ff; border-radius:4px; }
+.amz:hover { background:rgba(0,25,255,.06); }
+</style>"""
 
 RESIZER_HTML = """<script>
 // iframe埋め込み時に親ページへ高さを通知する(テクノエッジ埋め込み用)
@@ -1171,6 +1193,7 @@ def build_html(items):
             .replace("%COUNT%", str(len(data)))
             .replace("%AFFTAG%", aff_tag)
             .replace("%AFFNOTICE%", AFF_NOTICE_HTML if te_mode else "")
+            .replace("%TETHEME%", TE_THEME_CSS if te_mode else "")
             .replace("%RESIZER%", RESIZER_HTML if te_mode else ""))
     tmp = OUT_HTML + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
