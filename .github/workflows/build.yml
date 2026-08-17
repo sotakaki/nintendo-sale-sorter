@@ -24,6 +24,7 @@ jobs:
 
       - name: Generate sale page
         env:
+          TZ: Asia/Tokyo
           NINTENDO_SALE_OUT: docs/index.html
           NINTENDO_SALE_TE_OUT: docs/te.html
           PSN_NPSSO: ${{ secrets.PSN_NPSSO }}
