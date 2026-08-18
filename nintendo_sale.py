@@ -993,7 +993,9 @@ function buildCards(list) {
   var out = [];
   for (var i = 0; i < cards.length; i++) {
     out.push(cards[i]);
-    if ((i + 1) % 10 === 0) out.push(prepaidCard());
+    var rank = i + 1;
+    // プリペイド枠: 10位の直後、以降は30件ごと(10, 40, 70, ...)
+    if (rank >= 10 && (rank - 10) % 30 === 0) out.push(prepaidCard());
   }
   return out.join('');
 }
