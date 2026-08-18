@@ -1194,7 +1194,7 @@ select, input[type=search] { border-radius:4px; background:#fff; color:#1f2346; 
 .pcard { background:#0019ff; border-color:#0019ff; color:#fff; align-items:center; justify-content:center; text-align:center; padding:16px 10px; gap:6px; position:relative; }
 .pcard:hover { opacity:.92; }
 .pcard .pc-icon { font-size:38px; line-height:1; }
-.pcard .pc-img { width:68%; max-width:150px; border-radius:4px; aspect-ratio:auto; }
+.pcard .pc-img { width:92%; max-width:230px; border-radius:4px; aspect-ratio:auto; }
 .pcard .pc-t { font-weight:700; font-size:13px; }
 .pcard .pc-s { font-size:11px; opacity:.85; line-height:1.5; }
 .pcard .pc-btn { margin-top:4px; background:#fff; color:#0019ff; border-radius:4px; padding:6px 14px; font-size:12px; font-weight:700; }
