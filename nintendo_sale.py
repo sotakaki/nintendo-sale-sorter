@@ -951,7 +951,6 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 </header>
 %TETHEME%
 %AFFNOTICE%
-%PREPAID%
 <div id="count"></div>
 <div id="grid"></div>
 <footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>「カタログ」は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
@@ -989,7 +988,24 @@ function render() {
   observeLazy();
 }
 function buildCards(list) {
-  return list.map(function(d) {
+  var cards = list.map(cardHtml);
+  if (!AFF_TAG) return cards.join('');
+  var out = [];
+  for (var i = 0; i < cards.length; i++) {
+    out.push(cards[i]);
+    if ((i + 1) % 10 === 0) out.push(prepaidCard());
+  }
+  return out.join('');
+}
+function prepaidCard() {
+  return '<a class="card pcard" href="https://www.amazon.co.jp/dp/%PREPAIDASIN%?tag=' + AFF_TAG + '" target="_blank" rel="noopener">'
+    + '<span class="pc-pr">PR</span><div class="pc-icon">💳</div>'
+    + '<div class="pc-t">ニンテンドープリペイド番号</div>'
+    + '<div class="pc-s">ダウンロード版の購入・<br>残高チャージに</div>'
+    + '<div class="pc-btn">Amazonで購入</div></a>';
+}
+function cardHtml(d) {
+  return (function(d) {
     var orig = (!d.mx && d.p != null && d.pct < 100) ? Math.round(d.p / (1 - d.pct/100)) : null;
     return '<a class="card" href="https://store-jp.nintendo.com/item/software/D' + d.id + '" target="_blank" rel="noopener">'
       + (d.im
@@ -1007,7 +1023,7 @@ function buildCards(list) {
       + psnBadge(d)
       + amazonBadge(d)
       + '</div></a>';
-  }).join('');
+  })(d);
 }
 // iframe埋め込みだと標準のloading="lazy"やIntersectionObserverが発火しないことがあるため、
 // TEモードはスクロール位置ベースの自前遅延読み込み(同一オリジンなら親のスクロールを直接監視)
@@ -1148,9 +1164,8 @@ render();
 AFF_NOTICE_HTML = ('<div id="affnotice">【PR】本ページ内のAmazonリンクは'
                    'アフィリエイト広告です。購入により当サイト運営者に紹介料が支払われる場合があります。</div>')
 
-PREPAID_HTML = ('<a id="prepaid" href="https://www.amazon.co.jp/dp/B09998HHSG?tag={TAG}" '
-                'target="_blank" rel="noopener">💳 ダウンロード版の購入には「ニンテンドープリペイド番号」'
-                '(オンラインコード版)が便利です — Amazonで購入 <span class="pr">PR</span></a>')
+# ランキング内に10件ごとに挿入するプリペイドカード枠(テクノエッジ版のみ、通常カードと別デザイン+PR明記)
+PREPAID_ASIN = "B09998HHSG"  # ニンテンドープリペイド番号 5000円 オンラインコード版
 
 # テクノエッジのトンマナ (techno-edge.net から採取: ブランド青#0019FF, 本文#1F2346, 游ゴシック, 角丸4px, 常時ライト)
 TE_THEME_CSS = """<style>
@@ -1171,10 +1186,13 @@ select, input[type=search] { border-radius:4px; background:#fff; color:#1f2346; 
 .psn { color:#0057b8; }
 .amz { color:#0019ff; border-color:#0019ff; border-radius:4px; }
 .amz:hover { background:rgba(0,25,255,.06); }
-#prepaid { display:block; max-width:1400px; margin:10px auto 0; padding:10px 14px; border:1px solid #0019ff; border-radius:4px; background:#fff; color:#0019ff; font-size:13px; font-weight:600; text-decoration:none; }
-#prepaid:hover { background:rgba(0,25,255,.06); }
-#prepaid .pr { font-size:10px; border:1px solid currentColor; border-radius:3px; padding:0 3px; margin-left:6px; font-weight:400; }
-@media (max-width:640px) { #prepaid { margin:10px 12px 0; font-size:12px; } }
+.pcard { background:#0019ff; border-color:#0019ff; color:#fff; align-items:center; justify-content:center; text-align:center; padding:16px 10px; gap:6px; position:relative; }
+.pcard:hover { opacity:.92; }
+.pcard .pc-icon { font-size:38px; line-height:1; }
+.pcard .pc-t { font-weight:700; font-size:13px; }
+.pcard .pc-s { font-size:11px; opacity:.85; line-height:1.5; }
+.pcard .pc-btn { margin-top:4px; background:#fff; color:#0019ff; border-radius:4px; padding:6px 14px; font-size:12px; font-weight:700; }
+.pcard .pc-pr { position:absolute; top:6px; right:6px; font-size:9px; border:1px solid rgba(255,255,255,.7); border-radius:3px; padding:0 3px; }
 </style>"""
 
 RESIZER_HTML = """<script>
@@ -1237,10 +1255,10 @@ def build_html(items, te_mode=False, out_path=None):
             .replace("%NOW%", now)
             .replace("%COUNT%", str(len(data)))
             .replace("%AFFTAG%", aff_tag)
+            .replace("%PREPAIDASIN%", PREPAID_ASIN)
             .replace("%TEMETA%", '<meta name="robots" content="noindex">\n' if te_mode else "")
             .replace("%LOWDISP%", "" if SHOW_PRICE_HISTORY else ' style="display:none"')
             .replace("%AFFNOTICE%", AFF_NOTICE_HTML if te_mode else "")
-            .replace("%PREPAID%", PREPAID_HTML.replace("{TAG}", aff_tag) if te_mode else "")
             .replace("%TETHEME%", TE_THEME_CSS if te_mode else "")
             .replace("%RESIZER%", RESIZER_HTML if te_mode else ""))
     tmp = out_file + ".tmp"
