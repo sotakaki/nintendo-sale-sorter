@@ -1000,7 +1000,7 @@ function buildCards(list) {
 function prepaidCard() {
   return '<a class="card pcard" href="https://www.amazon.co.jp/dp/%PREPAIDASIN%?tag=' + AFF_TAG + '" target="_blank" rel="noopener">'
     + '<span class="pc-pr">PR</span><div class="pc-icon">💳</div>'
-    + '<div class="pc-t">ニンテンドープリペイド番号</div>'
+    + '<div class="pc-t">ニンテンドープリペイド</div>'
     + '<div class="pc-s">ダウンロード版の購入・<br>残高チャージに</div>'
     + '<div class="pc-btn">Amazonで購入</div></a>';
 }
