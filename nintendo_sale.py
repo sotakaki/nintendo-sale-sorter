@@ -376,122 +376,67 @@ def enrich_igdb_steam(items, steam_cache, backfill=False):
     log.info("igdb-steam: map=%d found=%d", len(jamap), found)
 
 
-# ---------------------------------------------------------------- Wikipedia→Steam補完
-WIKI_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wiki_cache.json")
-WIKI_INTERVAL = 1.5
-WIKI_CAP = 60                    # 通常実行1回あたりの連鎖試行数上限(1試行=最大3リクエスト)
-WIKI_RECHECK_DAYS = 180
-WIKI_GAME_TYPES = {"Q7889", "Q116680"}  # video game, expansion pack
-_last_wiki_req = [0.0]
+# ---------------------------------------------------------------- Wikidata→Steam補完
+# 方式: SPARQL一括クエリで「日本語ラベル/別名→Steam appID」の対応表を作り置きし、
+# 日々の照合はローカルで行う(API呼び出しゼロ)。再構築は --steam-backfill 時のみ(1クエリ)。
+# ※旧方式(ja.wikipedia検索の逐次クロール)は429連発で廃止。成果はsteam_cacheに残存。
+WIKIDATA_MAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wikidata_ja_map.json")
 
 
-def wiki_get(url):
-    wait = WIKI_INTERVAL - (time.monotonic() - _last_wiki_req[0])
-    if wait > 0:
-        time.sleep(wait)
-    _last_wiki_req[0] = time.monotonic()
+def build_wikidata_map():
+    """Wikidataから日本語名→Steam appIDの対応表を1クエリで構築して保存する"""
+    q = """SELECT ?name ?steam WHERE {
+      ?item wdt:P1733 ?steam .
+      { ?item rdfs:label ?name . FILTER(lang(?name) = "ja") }
+      UNION
+      { ?item skos:altLabel ?name . FILTER(lang(?name) = "ja") }
+    }"""
+    url = "https://query.wikidata.org/sparql?format=json&query=" + urllib.parse.quote(q)
     req = urllib.request.Request(url, headers={
         "User-Agent": "nintendo-sale-sorter/1.0 (personal tool; github.com/sotakaki/nintendo-sale-sorter)"})
-    for attempt in range(2):
+    rows = json.load(urllib.request.urlopen(req, timeout=120))["results"]["bindings"]
+    pairs = {}
+    for r in rows:
+        nm = norm_name(r["name"]["value"])
         try:
-            return json.load(urllib.request.urlopen(req, timeout=30))
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt == 0:
-                time.sleep(30)
-                continue
-            raise
+            appid = int(r["steam"]["value"])
+        except (TypeError, ValueError):
+            continue
+        if nm:
+            pairs.setdefault(nm, set()).add(appid)
+    out = {nm: apps.pop() for nm, apps in pairs.items() if len(apps) == 1}  # 曖昧名は捨てる
+    tmp = WIKIDATA_MAP + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False)
+    os.replace(tmp, WIKIDATA_MAP)
+    log.info("wikidata map: built %d ja-name->steam entries (rows=%d)", len(out), len(rows))
 
 
-def wiki_steam_lookup(title):
-    """ja.wikipedia検索→Wikidataで検証(ビデオゲーム+ja/enラベル一致)→Steam appID or None"""
-    q = urllib.parse.urlencode({"action": "query", "list": "search", "srsearch": title,
-                                "srlimit": 2, "srnamespace": 0, "format": "json"})
-    hits = wiki_get("https://ja.wikipedia.org/w/api.php?" + q).get("query", {}).get("search", [])
-    if not hits:
-        return None
-    q = urllib.parse.urlencode({"action": "query", "titles": hits[0]["title"],
-                                "prop": "pageprops", "ppprop": "wikibase_item",
-                                "redirects": 1, "format": "json"})
-    qid = None
-    for p in wiki_get("https://ja.wikipedia.org/w/api.php?" + q).get("query", {}).get("pages", {}).values():
-        qid = (p.get("pageprops") or {}).get("wikibase_item")
-    if not qid:
-        return None
-    q = urllib.parse.urlencode({"action": "wbgetentities", "ids": qid,
-                                "props": "claims|labels|aliases", "format": "json"})
-    ent = wiki_get("https://www.wikidata.org/w/api.php?" + q).get("entities", {}).get(qid) or {}
-    claims = ent.get("claims", {})
-    p31 = {c["mainsnak"].get("datavalue", {}).get("value", {}).get("id")
-           for c in claims.get("P31", [])}
-    if not (p31 & WIKI_GAME_TYPES) or "P1733" not in claims:
-        return None
-    names = []
-    for lang in ("ja", "en"):
-        lb = ent.get("labels", {}).get(lang)
-        if lb:
-            names.append(lb["value"])
-        names += [a["value"] for a in ent.get("aliases", {}).get(lang, [])]
-    t = norm_name(title)
-    if not any(difflib.SequenceMatcher(None, t, norm_name(n)).ratio() >= 0.85 for n in names if n):
-        return None
-    val = claims["P1733"][0]["mainsnak"].get("datavalue", {}).get("value")
+def enrich_wikidata_steam(items, steam_cache, backfill=False):
+    """wikidata_ja_map.json(日本語名→Steam appID)でローカル照合し、steam_cacheに注入する"""
+    if backfill:
+        try:
+            build_wikidata_map()
+        except Exception:
+            log.exception("wikidata map build failed; using existing map")
     try:
-        return int(val)
-    except (TypeError, ValueError):
-        return None
-
-
-def enrich_wiki_steam(items, steam_cache, backfill=False):
-    """Steam検索で見つからなかった日本語名タイトルをWikipedia経由でSteamに接続する。
-
-    見つけたappidはsteam_cacheに注入し、レビュー取得はenrich_steamに任せる。
-    """
-    try:
-        with open(WIKI_CACHE, encoding="utf-8") as f:
-            wcache = json.load(f)
+        with open(WIKIDATA_MAP, encoding="utf-8") as f:
+            wmap = json.load(f)
     except (OSError, ValueError):
-        wcache = {}
+        log.info("wikidata: no map file, skipping")
+        return
     now = time.time()
-    day = 86400
-    budget = 10**9 if backfill else WIKI_CAP
-    tried = found = 0
-    consecutive_fails = 0
-    try:
-        for it in items:
-            if consecutive_fails >= 5:
-                log.warning("wiki: 5 consecutive failures (rate limited?), aborting this run")
-                break
-            sc = steam_cache.get(it["id"])
-            if sc is None or sc.get("appid") is not None:
-                continue  # Steam未照会 or 照会済みでマッチあり → 対象外
-            if not re.search(r"[ぁ-ゖァ-ヺ一-鿿]", it["n"]):
-                continue  # 英語名タイトルはSteam直接検索で十分
-            w = wcache.get(it["id"])
-            if w is not None and (w.get("steam") is not None
-                                  or now - w.get("checked", 0) < WIKI_RECHECK_DAYS * day):
-                continue
-            if budget <= 0:
-                continue
-            budget -= 1
-            tried += 1
-            try:
-                appid = wiki_steam_lookup(it["n"])
-                consecutive_fails = 0
-            except Exception as e:
-                log.warning("wiki lookup failed for %r: %s", it["n"], e)
-                consecutive_fails += 1
-                continue
-            wcache[it["id"]] = {"steam": appid, "checked": now}
-            if appid:
-                found += 1
-                steam_cache[it["id"]] = {"appid": appid, "checked": now,
-                                         "rev": None, "rev_at": 0, "via": "wiki"}
-    finally:
-        tmp = WIKI_CACHE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(wcache, f, ensure_ascii=False)
-        os.replace(tmp, WIKI_CACHE)
-        log.info("wiki-steam: tried=%d found=%d cached=%d", tried, found, len(wcache))
+    found = 0
+    for it in items:
+        sc = steam_cache.get(it["id"])
+        if sc is None or sc.get("appid") is not None:
+            continue
+        appid = wmap.get(norm_name(it["n"]))
+        if appid:
+            found += 1
+            steam_cache[it["id"]] = {"appid": appid, "checked": now,
+                                     "rev": None, "rev_at": 0, "via": "wikidata"}
+    log.info("wikidata-steam: map=%d found=%d", len(wmap), found)
 
 
 # ---------------------------------------------------------------- PSN
@@ -694,22 +639,38 @@ def enrich_psn(items, backfill=False):
                  searched, refreshed, matched, len(items), len(cache), bool(token))
 
 
+ASIN_OVERRIDES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asin_overrides.json")
+
+
 def enrich_amazon(items):
-    """IGDB由来のASINマップで日本のAmazon商品直リンクを付与(テクノエッジ版用)"""
+    """ASINマップで日本のAmazon商品直リンクを付与(テクノエッジ版用)。
+
+    優先順: 手動オーバーライド(asin_overrides.json、編集部がタイトル名: ASINで追記可能)
+            → IGDB由来のsteam appid引き → IGDB由来の日本語名引き
+    """
     try:
         with open(IGDB_ASIN, encoding="utf-8") as f:
             amap = json.load(f)
     except (OSError, ValueError):
-        log.info("amazon: no asin map, all links will fall back to search")
-        return
+        amap = {}
+    try:
+        with open(ASIN_OVERRIDES, encoding="utf-8") as f:
+            overrides = {norm_name(k): v for k, v in json.load(f).items()}
+    except (OSError, ValueError):
+        overrides = {}
     by_name, by_steam = amap.get("by_name", {}), amap.get("by_steam", {})
+    if not (overrides or by_name or by_steam):
+        log.info("amazon: no asin data, all links will fall back to search")
+        return
     found = 0
     for it in items:
-        az = by_steam.get(str(it.get("appid") or "")) or by_name.get(norm_name(it["n"]))
+        az = (overrides.get(norm_name(it["n"]))
+              or by_steam.get(str(it.get("appid") or ""))
+              or by_name.get(norm_name(it["n"])))
         if az:
             it["az"] = az
             found += 1
-    log.info("amazon: direct asin links=%d/%d", found, len(items))
+    log.info("amazon: direct asin links=%d/%d (overrides=%d)", found, len(items), len(overrides))
 
 
 GC_VERDICT_DISPLAY = {"良": "良作", "良*": "良作*", "ク": "クソゲー", "賛否": "賛否両論",
@@ -822,10 +783,10 @@ def enrich_steam(items, backfill=False):
     except Exception:
         log.exception("igdb-steam failed; continuing")
     try:
-        # IGDBでも残った日本語名タイトルをWikipedia経由で補完
-        enrich_wiki_steam(items, cache, backfill=backfill)
+        # IGDBでも残った日本語名タイトルをWikidataの対応表で補完
+        enrich_wikidata_steam(items, cache, backfill=backfill)
     except Exception:
-        log.exception("wiki-steam failed; continuing")
+        log.exception("wikidata-steam failed; continuing")
     now = time.time()
     day = 86400
     search_budget = 10**9 if backfill else STEAM_SEARCH_CAP
