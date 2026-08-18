@@ -1242,8 +1242,9 @@ def build_html(items, te_mode=False, out_path=None):
     data = []
     for it in items:
         d = {k: it[k] for k in ("id", "n", "p", "pct", "mx", "mk", "im")}
-        if it.get("pc") == "BEE":
-            d["hw"] = 1  # Switch 2版
+        # Switch 2版: 専用商品(BEE)のほか、「Nintendo Switch 2 Edition」型のアップグレード版はHACコードのため名前でも判定
+        if it.get("pc") == "BEE" or "switch 2 edition" in it["n"].lower():
+            d["hw"] = 1
         if it.get("sa"):
             d["sa"], d["sp"], d["sn"] = it["sa"], it["sp"], it["sn"]
         if SHOW_PRICE_HISTORY and it.get("hm") is not None:
