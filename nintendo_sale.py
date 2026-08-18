@@ -1001,7 +1001,8 @@ function buildCards(list) {
 }
 function prepaidCard() {
   return '<a class="card pcard" href="https://www.amazon.co.jp/dp/%PREPAIDASIN%?tag=' + AFF_TAG + '" target="_blank" rel="noopener">'
-    + '<span class="pc-pr">PR</span><div class="pc-icon">💳</div>'
+    + '<span class="pc-pr">PR</span>'
+    + '<img class="pc-img" src="%PREPAIDIMG%" alt="ニンテンドープリペイドカード">'
     + '<div class="pc-t">ニンテンドープリペイド</div>'
     + '<div class="pc-s">ダウンロード版の購入・<br>残高チャージに</div>'
     + '<div class="pc-btn">Amazonで購入</div></a>';
@@ -1166,8 +1167,10 @@ render();
 AFF_NOTICE_HTML = ('<div id="affnotice">【PR】本ページ内のAmazonリンクは'
                    'アフィリエイト広告です。購入により当サイト運営者に紹介料が支払われる場合があります。</div>')
 
-# ランキング内に10件ごとに挿入するプリペイドカード枠(テクノエッジ版のみ、通常カードと別デザイン+PR明記)
+# ランキング内に挿入するプリペイドカード枠(テクノエッジ版のみ、通常カードと別デザイン+PR明記)
 PREPAID_ASIN = "B09998HHSG"  # ニンテンドープリペイド番号 5000円 オンラインコード版
+# Amazon商品ページの画像(暫定の直リンク。PA-API導入後は公式返却URLに差し替える)
+PREPAID_IMG = "https://m.media-amazon.com/images/I/51Xu2iDZYSL._AC_SX300_.jpg"
 
 # テクノエッジのトンマナ (techno-edge.net から採取: ブランド青#0019FF, 本文#1F2346, 游ゴシック, 角丸4px, 常時ライト)
 TE_THEME_CSS = """<style>
@@ -1191,6 +1194,7 @@ select, input[type=search] { border-radius:4px; background:#fff; color:#1f2346; 
 .pcard { background:#0019ff; border-color:#0019ff; color:#fff; align-items:center; justify-content:center; text-align:center; padding:16px 10px; gap:6px; position:relative; }
 .pcard:hover { opacity:.92; }
 .pcard .pc-icon { font-size:38px; line-height:1; }
+.pcard .pc-img { width:68%; max-width:150px; border-radius:4px; aspect-ratio:auto; }
 .pcard .pc-t { font-weight:700; font-size:13px; }
 .pcard .pc-s { font-size:11px; opacity:.85; line-height:1.5; }
 .pcard .pc-btn { margin-top:4px; background:#fff; color:#0019ff; border-radius:4px; padding:6px 14px; font-size:12px; font-weight:700; }
@@ -1258,6 +1262,7 @@ def build_html(items, te_mode=False, out_path=None):
             .replace("%COUNT%", str(len(data)))
             .replace("%AFFTAG%", aff_tag)
             .replace("%PREPAIDASIN%", PREPAID_ASIN)
+            .replace("%PREPAIDIMG%", PREPAID_IMG)
             .replace("%TEMETA%", '<meta name="robots" content="noindex">\n' if te_mode else "")
             .replace("%LOWDISP%", "" if SHOW_PRICE_HISTORY else ' style="display:none"')
             .replace("%AFFNOTICE%", AFF_NOTICE_HTML if te_mode else "")
