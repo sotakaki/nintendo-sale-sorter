@@ -38,6 +38,9 @@ API_BASE = f"https://{SHORT_CODE}.api.commercecloud.salesforce.com"
 
 OUT_HTML = os.environ.get("NINTENDO_SALE_OUT") or os.path.join(
     os.path.expanduser("~"), "Documents", "nintendo_sale_sorted.html")
+# 過去最安の「表示」フラグ。データ収集(price_history.json)は常時継続しており、
+# 履歴が十分溜まったらTrueにしてロールアウトする(2026-08-14収集開始、半年〜1年後を目安)
+SHOW_PRICE_HISTORY = False
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nintendo_sale.log")
 STEAM_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steam_cache.json")
 PRICE_HISTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "price_history.json")
@@ -982,7 +985,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
   <label class="chk"><input type="checkbox" id="steamonly">Steamレビューあり</label>
   <label class="chk"><input type="checkbox" id="gconly">カタログレビューあり</label>
   <label class="chk"><input type="checkbox" id="psnonly">PSレビューあり</label>
-  <label class="chk"><input type="checkbox" id="newlowonly">過去最安のみ</label>
+  <label class="chk"%LOWDISP%><input type="checkbox" id="newlowonly">過去最安のみ</label>
   </div>
 </header>
 %TETHEME%
@@ -1238,7 +1241,7 @@ def build_html(items, te_mode=False, out_path=None):
         d = {k: it[k] for k in ("id", "n", "p", "pct", "mx", "mk", "im")}
         if it.get("sa"):
             d["sa"], d["sp"], d["sn"] = it["sa"], it["sp"], it["sn"]
-        if it.get("hm") is not None:
+        if SHOW_PRICE_HISTORY and it.get("hm") is not None:
             d["hm"], d["hd"] = it["hm"], it["hd"]
             if it.get("nl"):
                 d["nl"] = it["nl"]
@@ -1265,6 +1268,7 @@ def build_html(items, te_mode=False, out_path=None):
             .replace("%COUNT%", str(len(data)))
             .replace("%AFFTAG%", aff_tag)
             .replace("%TEMETA%", '<meta name="robots" content="noindex">\n' if te_mode else "")
+            .replace("%LOWDISP%", "" if SHOW_PRICE_HISTORY else ' style="display:none"')
             .replace("%AFFNOTICE%", AFF_NOTICE_HTML if te_mode else "")
             .replace("%TETHEME%", TE_THEME_CSS if te_mode else "")
             .replace("%RESIZER%", RESIZER_HTML if te_mode else ""))
