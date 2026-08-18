@@ -654,18 +654,25 @@ def enrich_amazon(items):
             amap = json.load(f)
     except (OSError, ValueError):
         amap = {}
+    # オーバーライドのキーは「タイトル名」または「id:商品ID」(同名でSwitch/Switch 2版が分かれる場合など)
+    overrides, ov_by_id = {}, {}
     try:
         with open(ASIN_OVERRIDES, encoding="utf-8") as f:
-            overrides = {norm_name(k): v for k, v in json.load(f).items()}
+            for k, v in json.load(f).items():
+                if k.startswith("id:"):
+                    ov_by_id[k[3:]] = v
+                else:
+                    overrides[norm_name(k)] = v
     except (OSError, ValueError):
-        overrides = {}
+        pass
     by_name, by_steam = amap.get("by_name", {}), amap.get("by_steam", {})
-    if not (overrides or by_name or by_steam):
+    if not (overrides or ov_by_id or by_name or by_steam):
         log.info("amazon: no asin data, all links will fall back to search")
         return
     found = 0
     for it in items:
-        az = (overrides.get(norm_name(it["n"]))
+        az = (ov_by_id.get(it["id"])
+              or overrides.get(norm_name(it["n"]))
               or by_steam.get(str(it.get("appid") or ""))
               or by_name.get(norm_name(it["n"])))
         if az:
