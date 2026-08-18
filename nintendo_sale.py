@@ -571,14 +571,19 @@ def psn_product(pid):
         log.warning("psn product fetch failed %s: %s", pid, e)
         return None
     m = re.search(r'"averageRating":([\d.]+),"totalRatingsCount":(\d+)', html)
-    p = re.search(r'"basePriceValue":(\d+),"discountedValue":(\d+),"currencyCode":"JPY"', html)
+    # 価格ブロックは複数ある(PS Plus会員向け「含まれます」=0円と非会員向け通常/セール価格)。
+    # serviceBranding が NONE のブロック=非会員価格を優先する
+    prices = re.findall(
+        r'"serviceBranding":\["(\w+)"[^{}]*?"basePriceValue":(\d+),"discountedValue":(\d+),"currencyCode":"JPY"',
+        html)
     out = {}
     if m:
         out["r"] = float(m.group(1))
         out["rc"] = int(m.group(2))
-    if p:
-        out["bp"] = int(p.group(1))
-        out["pp"] = int(p.group(2))
+    if prices:
+        chosen = next((p for p in prices if p[0] == "NONE"), prices[0])
+        out["bp"] = int(chosen[1])
+        out["pp"] = int(chosen[2])
     return out or None
 
 
@@ -626,8 +631,9 @@ def enrich_psn(items, backfill=False):
                 it["pv"] = c["r"]
                 it["pn"] = c["rc"]
                 it["pid"] = c.get("pid")
-                # pp=0 はPS Plusゲームカタログ収録等(加入者は実質無料)なので0円のまま表示する
-                if c.get("pp") is not None:
+                # 非会員価格(serviceBranding=NONE)のみ採用。0/0は有効な価格ブロックなし
+                # (体験版等の誤検出)とみなし価格非表示にする(★評価だけ出す)
+                if c.get("pp"):
                     it["pp"] = c["pp"]
                     it["pb"] = c.get("bp")
     finally:
@@ -845,7 +851,7 @@ TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-%TEMETA%<title>ニンテンドーストア セール 値引き率順 (%COUNT%件 / %NOW%取得)</title>
+%TEMETA%%TEGA%<title>ニンテンドーストア セール 値引き率順 (%COUNT%件 / %NOW%取得)</title>
 <style>
 :root { --bg:#f5f5f7; --card:#fff; --text:#1d1d1f; --sub:#6e6e73; --accent:#e60012; --line:#e3e3e6; }
 @media (prefers-color-scheme: dark) {
@@ -1108,9 +1114,11 @@ function psnBadge(d) {
   if (d.pv == null) return '';
   var s = 'PS ★' + d.pv.toFixed(1) + '(' + d.pn.toLocaleString('ja-JP') + ')';
   if (d.pp != null) {
-    s += '・' + yen(d.pp);
-    if (d.pp === 0) s += ' <span class="sale">PS+カタログ?</span>';
-    else if (d.pb != null && d.pp < d.pb) s += ' <span class="sale">セール中</span>';
+    if (d.pp === 0) s += '・無料';
+    else {
+      s += '・' + yen(d.pp);
+      if (d.pb != null && d.pp < d.pb) s += ' <span class="sale">セール中</span>';
+    }
   }
   return '<div class="psn"' + (d.pid ? ' data-pid="' + d.pid + '"' : '') + '>' + s + '</div>';
 }
@@ -1124,7 +1132,23 @@ function steamBadge(d) {
   var cls = d.sp >= 70 ? 'g' : d.sp >= 40 ? 'y' : 'r';
   return '<div class="stm ' + cls + '" data-app="' + d.sa + '">Steam ' + d.sp + '%好評・' + d.sn.toLocaleString('ja-JP') + '件</div>';
 }
+// クリック計測(テクノエッジ版のみ、GA4イベント)。リンク遷移は妨げない
+function track(e) {
+  if (typeof gtag !== 'function') return;
+  var card = e.target.closest('.card');
+  if (!card) return;
+  var type = card.classList.contains('pcard') ? 'prepaid'
+    : e.target.closest('.amz') ? 'amazon'
+    : e.target.closest('.stm') ? 'steam'
+    : e.target.closest('.psn') ? 'ps_store'
+    : e.target.closest('.gc') ? 'catalog'
+    : 'nintendo_store';
+  var nEl = card.querySelector('.n');
+  var name = card.classList.contains('pcard') ? 'ニンテンドープリペイド' : (nEl ? nEl.textContent : '');
+  gtag('event', 'sale_click', {link_type: type, item_name: name.slice(0, 95)});
+}
 grid.addEventListener('click', function(e) {
+  track(e);
   var b = e.target.closest('.stm, .gc, .psn, .amz');
   if (!b) return;
   var url = b.classList.contains('stm')
@@ -1180,6 +1204,12 @@ AFF_NOTICE_HTML = ('<div id="affnotice">【PR】本ページ内のAmazonリン�
 PREPAID_ASIN = "B09998HHSG"  # ニンテンドープリペイド番号 5000円 オンラインコード版
 # Amazon商品ページの画像(暫定の直リンク。PA-API導入後は公式返却URLに差し替える)
 PREPAID_IMG = "https://m.media-amazon.com/images/I/51Xu2iDZYSL._AC_SX300_.jpg"
+
+# テクノエッジのGA4(gtag)。IDはtechno-edge.netのGTMコンテナ(GTM-MWBD5H2)内の公開値
+TE_GA_ID = "G-33PLFDWM88"
+TE_GA_HTML = (f'<script async src="https://www.googletagmanager.com/gtag/js?id={TE_GA_ID}"></script>\n'
+              '<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}'
+              f"gtag('js',new Date());gtag('config','{TE_GA_ID}');</script>\n")
 
 # テクノエッジのトンマナ (techno-edge.net から採取: ブランド青#0019FF, 本文#1F2346, 游ゴシック, 角丸4px, 常時ライト)
 TE_THEME_CSS = """<style>
@@ -1276,6 +1306,7 @@ def build_html(items, te_mode=False, out_path=None):
             .replace("%PREPAIDASIN%", PREPAID_ASIN)
             .replace("%PREPAIDIMG%", PREPAID_IMG)
             .replace("%TEMETA%", '<meta name="robots" content="noindex">\n' if te_mode else "")
+            .replace("%TEGA%", TE_GA_HTML if te_mode else "")
             .replace("%LOWDISP%", "" if SHOW_PRICE_HISTORY else ' style="display:none"')
             .replace("%AFFNOTICE%", AFF_NOTICE_HTML if te_mode else "")
             .replace("%TETHEME%", TE_THEME_CSS if te_mode else "")
