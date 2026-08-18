@@ -1091,7 +1091,7 @@ function lowBadge(d) {
 }
 function amazonBadge(d) {
   if (!AFF_TAG) return '';
-  if (d.az) return '<div class="amz" data-az="' + d.az + '">Amazonで見る</div>';
+  if (d.az) return '<div class="amz" data-az="' + d.az + '">Amazonで購入</div>';
   return '<div class="amz" data-q="' + esc(d.n) + '">Amazonで探す</div>';
 }
 function psnBadge(d) {
