@@ -171,6 +171,7 @@ def collect():
                     "mx": 1 if x.get("isRangePrice") else 0,
                     "mk": x.get("manufacturerName") or "",
                     "im": img.replace(IMG_PREFIX, "").replace("?sw=346&strip=false", ""),
+                    "pc": x.get("productClassCode") or "",  # HAC=Switch / BEE=Switch 2
                 }
         log.info("%s: merged unique=%d", srule, len(merged))
     items = []
@@ -869,6 +870,7 @@ input[type=search] { width:180px; }
 .card .b { padding:8px 10px 10px; display:flex; flex-direction:column; gap:3px; flex:1; }
 .card .n { font-size:12px; line-height:1.35; font-weight:600; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; min-height:2.7em; }
 .card .mk { font-size:10px; color:var(--sub); }
+.hw2 { display:inline-block; border:1px solid #e60012; color:#e60012; border-radius:3px; padding:0 3px; margin-right:4px; font-size:9px; font-weight:700; }
 .row { display:flex; align-items:baseline; gap:6px; margin-top:auto; }
 .off { color:var(--accent); font-weight:700; font-size:15px; white-space:nowrap; }
 .off small { font-size:10px; font-weight:600; }
@@ -1016,7 +1018,7 @@ function cardHtml(d) {
             ? '<img class="lz" data-src="' + IMG + d.im + '?sw=346&strip=false" alt="">'
             : '<img loading="lazy" src="' + IMG + d.im + '?sw=346&strip=false" alt="">')
          : '<div style="aspect-ratio:1;background:#ddd"></div>')
-      + '<div class="b"><div class="n">' + esc(d.n) + '</div><div class="mk">' + esc(d.mk) + '</div>'
+      + '<div class="b"><div class="n">' + esc(d.n) + '</div><div class="mk">' + (d.hw ? '<span class="hw2">Switch 2</span>' : '') + esc(d.mk) + '</div>'
       + '<div class="row"><span class="off">' + (d.mx ? '<small>最大</small>' : '') + d.pct + '<small>%OFF</small></span>'
       + '<span class="pr"><b>' + yen(d.p) + '</b>' + (d.mx ? '〜' : '') + '</span></div>'
       + (orig ? '<div class="mk">定価 ' + yen(orig) + '</div>' : '')
@@ -1233,6 +1235,8 @@ def build_html(items, te_mode=False, out_path=None):
     data = []
     for it in items:
         d = {k: it[k] for k in ("id", "n", "p", "pct", "mx", "mk", "im")}
+        if it.get("pc") == "BEE":
+            d["hw"] = 1  # Switch 2版
         if it.get("sa"):
             d["sa"], d["sp"], d["sn"] = it["sa"], it["sp"], it["sn"]
         if SHOW_PRICE_HISTORY and it.get("hm") is not None:
