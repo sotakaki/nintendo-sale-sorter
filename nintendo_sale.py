@@ -648,12 +648,109 @@ def enrich_psn(items, backfill=False):
 
 ASIN_OVERRIDES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asin_overrides.json")
 
+# ---------------------------------------------------------------- Amazon Creators API
+# PA-API後継の公式アフィリエイトAPI。OAuth2(LWA) client_credentials認証。
+# 束ねアカウント(レップ管理)なので通常運用は1日500リクエスト以内に抑える。
+AMZ_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amazon_cache.json")
+CREATORS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".creators_api")
+AMZ_TOKEN_URL = "https://api.amazon.co.jp/auth/o2/token"   # v3.3=極東リージョン
+AMZ_API = "https://creatorsapi.amazon"
+AMZ_MARKETPLACE = "www.amazon.co.jp"
+AMZ_INTERVAL = 1.1
+AMZ_SEARCH_CAP = 300           # 通常実行1回あたりの新規タイトル検索数上限
+AMZ_SEARCH_CAP_BACKFILL = 1500
+AMZ_NOMATCH_RECHECK_DAYS = 30
+_last_amz_req = [0.0]
 
-def enrich_amazon(items):
-    """ASINマップで日本のAmazon商品直リンクを付与(テクノエッジ版用)。
 
-    優先順: 手動オーバーライド(asin_overrides.json、編集部がタイトル名: ASINで追記可能)
-            → IGDB由来のsteam appid引き → IGDB由来の日本語名引き
+def creators_creds():
+    cid = os.environ.get("CREATORS_CLIENT_ID", "").strip()
+    sec = os.environ.get("CREATORS_CLIENT_SECRET", "").strip()
+    if cid and sec:
+        return cid, sec
+    try:
+        with open(CREATORS_FILE, encoding="utf-8") as f:
+            parts = f.read().split()
+        return parts[0], parts[1]
+    except (OSError, IndexError):
+        return None, None
+
+
+def creators_token(cid, sec):
+    data = urllib.parse.urlencode({
+        "grant_type": "client_credentials", "client_id": cid,
+        "client_secret": sec, "scope": "creatorsapi::default"}).encode()
+    status, _, body = http(AMZ_TOKEN_URL, data=data,
+                           headers={"Content-Type": "application/x-www-form-urlencoded"})
+    if status != 200:
+        log.warning("creators api: token failed %s", status)
+        return None
+    return json.loads(body)["access_token"]
+
+
+def creators_call(token, path, body):
+    wait = AMZ_INTERVAL - (time.monotonic() - _last_amz_req[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last_amz_req[0] = time.monotonic()
+    req = urllib.request.Request(
+        AMZ_API + path, data=json.dumps(body).encode(),
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
+                 "x-marketplace": AMZ_MARKETPLACE, "User-Agent": UA})
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=30))
+    except (urllib.error.URLError, ValueError) as e:
+        log.warning("creators api %s failed: %s", path, str(e)[:120])
+        return None
+
+
+def amz_search_asin(token, tag, name):
+    """タイトル名でsearchItemsし、名前検証を通った最上位のASINを返す"""
+    res = creators_call(token, "/catalog/v1/searchItems", {
+        "keywords": name[:120] + " Switch",
+        "searchIndex": "VideoGames",
+        "itemCount": 3,
+        "partnerTag": tag,
+        "resources": ["itemInfo.title"],
+    })
+    items = ((res or {}).get("searchResult") or {}).get("items") or []
+    target = norm_name(name)
+    if len(target) < 4:  # 超短名は誤マッチしやすいので自動検索しない(オーバーライドで対応)
+        return None
+    for it in items:
+        title = (((it.get("itemInfo") or {}).get("title") or {}).get("displayValue")) or ""
+        c = norm_name(title)
+        if target in c or difflib.SequenceMatcher(None, target, c).ratio() >= 0.8:
+            return it.get("asin")
+    return None
+
+
+def amz_get_prices(token, tag, asins):
+    """getItemsで最大10件ずつbuybox価格を取得 → {asin: 円}"""
+    out = {}
+    for i in range(0, len(asins), 10):
+        chunk = asins[i:i + 10]
+        res = creators_call(token, "/catalog/v1/getItems", {
+            "itemIds": chunk,
+            "partnerTag": tag,
+            "resources": ["offersV2.listings.price"],
+        })
+        for it in ((res or {}).get("itemsResult") or {}).get("items") or []:
+            for l in (it.get("offersV2") or {}).get("listings") or []:
+                if l.get("isBuyBoxWinner"):
+                    amt = ((l.get("price") or {}).get("money") or {}).get("amount")
+                    if amt is not None:
+                        out[it["asin"]] = int(amt)
+                    break
+    return out
+
+
+def enrich_amazon(items, backfill=False):
+    """Amazon直リンク+現在価格を付与(テクノエッジ版用)。
+
+    ASINの優先順: 手動オーバーライド(asin_overrides.json、タイトル名 or id:商品ID)
+                → IGDB由来 → Creators API検索(キャッシュ・日次キャップつき)
+    価格はCreators APIのbuybox価格を毎回取得(24hより古い表示をしないため)。
     """
     try:
         with open(IGDB_ASIN, encoding="utf-8") as f:
@@ -672,19 +769,55 @@ def enrich_amazon(items):
     except (OSError, ValueError):
         pass
     by_name, by_steam = amap.get("by_name", {}), amap.get("by_steam", {})
-    if not (overrides or ov_by_id or by_name or by_steam):
-        log.info("amazon: no asin data, all links will fall back to search")
-        return
+    try:
+        with open(AMZ_CACHE, encoding="utf-8") as f:
+            acache = json.load(f)
+    except (OSError, ValueError):
+        acache = {}
+    cid, sec = creators_creds()
+    token = creators_token(cid, sec) if cid else None
+    tag = os.environ.get("AMAZON_TAG", "technoedge-22")
+    now = time.time()
+    day = 86400
+    budget = AMZ_SEARCH_CAP_BACKFILL if backfill else AMZ_SEARCH_CAP
+    searched = 0
     found = 0
-    for it in items:
-        az = (ov_by_id.get(it["id"])
-              or overrides.get(norm_name(it["n"]))
-              or by_steam.get(str(it.get("appid") or ""))
-              or by_name.get(norm_name(it["n"])))
-        if az:
-            it["az"] = az
-            found += 1
-    log.info("amazon: direct asin links=%d/%d (overrides=%d)", found, len(items), len(overrides))
+    try:
+        for it in items:
+            az = (ov_by_id.get(it["id"])
+                  or overrides.get(norm_name(it["n"]))
+                  or by_steam.get(str(it.get("appid") or ""))
+                  or by_name.get(norm_name(it["n"])))
+            if not az:
+                c = acache.get(it["id"])
+                if c is not None and (c.get("asin")
+                                      or now - c.get("checked", 0) < AMZ_NOMATCH_RECHECK_DAYS * day):
+                    az = c.get("asin")
+                elif token and budget > 0:
+                    budget -= 1
+                    searched += 1
+                    az = amz_search_asin(token, tag, it["n"])
+                    acache[it["id"]] = {"asin": az, "checked": now}
+            if az:
+                it["az"] = az
+                found += 1
+        # Amazon現在価格(buybox)を一括取得してeショップ価格と比較可能にする
+        priced = 0
+        if token:
+            asins = sorted({it["az"] for it in items if it.get("az")})
+            prices = amz_get_prices(token, tag, asins)
+            for it in items:
+                p = prices.get(it.get("az"))
+                if p:
+                    it["azp"] = p
+                    priced += 1
+        log.info("amazon: direct links=%d/%d searched=%d priced=%d (overrides=%d)",
+                 found, len(items), searched, priced, len(overrides))
+    finally:
+        tmp = AMZ_CACHE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(acache, f, ensure_ascii=False)
+        os.replace(tmp, AMZ_CACHE)
 
 
 GC_VERDICT_DISPLAY = {"良": "良作", "良*": "良作*", "ク": "クソゲー", "賛否": "賛否両論",
@@ -1107,7 +1240,12 @@ function lowBadge(d) {
 }
 function amazonBadge(d) {
   if (!AFF_TAG) return '';
-  if (d.az) return '<div class="amz" data-az="' + d.az + '">Amazonで購入</div>';
+  if (d.az) {
+    var label = 'Amazonで購入' + (d.azp ? '・' + yen(d.azp) : '');
+    var cheaper = d.azp && d.p != null && d.azp < d.p;
+    return '<div class="amz' + (cheaper ? ' amz-low' : '') + '" data-az="' + d.az + '">' + label
+      + (cheaper ? '<span class="lowtag">eショップより安い</span>' : '') + '</div>';
+  }
   return '<div class="amz" data-q="' + esc(d.n) + '">Amazonで探す</div>';
 }
 function psnBadge(d) {
@@ -1230,6 +1368,8 @@ select, input[type=search] { border-radius:4px; background:#fff; color:#1f2346; 
 .psn { color:#0057b8; }
 .amz { color:#0019ff; border-color:#0019ff; border-radius:4px; }
 .amz:hover { background:rgba(0,25,255,.06); }
+.amz.amz-low { color:#c62828; border-color:#c62828; font-weight:700; }
+.amz .lowtag { display:block; font-size:9px; font-weight:400; margin-top:1px; }
 .pcard { background:#0019ff; border-color:#0019ff; color:#fff; align-items:center; justify-content:center; text-align:center; padding:16px 10px; gap:6px; position:relative; }
 .pcard:hover { opacity:.92; }
 .pcard .pc-icon { font-size:38px; line-height:1; }
@@ -1293,6 +1433,8 @@ def build_html(items, te_mode=False, out_path=None):
                 d["pp"], d["pb"] = it["pp"], it.get("pb")
         if it.get("az"):
             d["az"] = it["az"]
+            if it.get("azp"):
+                d["azp"] = it["azp"]
         data.append(d)
     now = time.strftime("%Y-%m-%d %H:%M")
     # te_mode: Amazonアフィリエイトリンク+PR表記+テクノエッジのトンマナ+iframeリサイズを有効化
@@ -1338,7 +1480,10 @@ def main():
         te_flag = "--techno-edge" in sys.argv
         te_out = os.environ.get("NINTENDO_SALE_TE_OUT", "").strip()
         if te_flag or te_out:
-            enrich_amazon(items)
+            try:
+                enrich_amazon(items, backfill=backfill)
+            except Exception:
+                log.exception("amazon enrich failed; continuing")
         build_html(items, te_mode=te_flag)
         if te_out and not te_flag:
             build_html(items, te_mode=True, out_path=te_out)

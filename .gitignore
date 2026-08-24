@@ -3,3 +3,4 @@ __pycache__/
 *.tmp
 .psn_npsso
 .igdb_credentials
+.creators_api
