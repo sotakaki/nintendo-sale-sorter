@@ -549,11 +549,17 @@ def psn_pick(query, results):
         if not ok and not short and r is results[0] and (r.get("score") or 0) >= 400:
             ok = True
         if ok:
+            # 商品IDは「GAME」カテゴリのものだけを候補にする(先頭がDLCのconceptがあるため)
             ids = []
             for cp in cm.get("categorizedProducts") or []:
-                ids += cp.get("ids") or []
+                if cp.get("topCategory") == "GAME":
+                    ids += cp.get("ids") or []
+            if not ids:
+                for cp in cm.get("categorizedProducts") or []:
+                    ids += cp.get("ids") or []
             sr = cm.get("starRating") or {}
             return {"cid": cm.get("id"), "pid": ids[0] if ids else None,
+                    "pids": ids[:4],
                     "nm": cm.get("name"),
                     "r": float(sr["score"]) if sr.get("score") else None,
                     "rc": int(sr["total"]) if sr.get("total") else 0}
@@ -577,6 +583,9 @@ def psn_product(pid):
         r'"serviceBranding":\["(\w+)"[^{}]*?"basePriceValue":(\d+),"discountedValue":(\d+),"currencyCode":"JPY"',
         html)
     out = {}
+    cls = re.search(r'"storeDisplayClassification":"([A-Z_]+)"', html)
+    if cls:
+        out["cls"] = cls.group(1)  # FULL_GAME / ADD_ON / DEMO 等(本体判定用)
     if m:
         out["r"] = float(m.group(1))
         out["rc"] = int(m.group(2))
@@ -585,6 +594,24 @@ def psn_product(pid):
         out["bp"] = int(chosen[1])
         out["pp"] = int(chosen[2])
     return out or None
+
+
+PSN_BAD_CLS = {"ADD_ON", "DEMO", "VIRTUAL_CURRENCY", "SUBSCRIPTION", "THEME", "AVATAR"}
+
+
+def psn_pick_full_game(candidates):
+    """商品ID候補を順に照会し、ゲーム本体(FULL_GAME優先、DLC等は除外)を選ぶ → (pid, prod) or (None, None)"""
+    fallback = None
+    for cand in (candidates or [])[:4]:
+        prod = psn_product(cand)
+        if not prod:
+            continue
+        cls = prod.get("cls", "")
+        if cls == "FULL_GAME":
+            return cand, prod
+        if cls not in PSN_BAD_CLS and fallback is None:
+            fallback = (cand, prod)  # PREMIUM_EDITION等は本体扱いの保険候補
+    return fallback or (None, None)
 
 
 def enrich_psn(items, backfill=False):
@@ -612,7 +639,9 @@ def enrich_psn(items, backfill=False):
                     c = hit or {"cid": None}
                     c["checked"] = now
                     if hit and hit.get("pid"):
-                        prod = psn_product(hit["pid"])
+                        # DLCやデモを掴まないよう、候補から「ゲーム本体」を選んで確定する
+                        pid, prod = psn_pick_full_game(hit.get("pids") or [hit["pid"]])
+                        c["pid"] = pid
                         if prod:
                             c.update(prod)
                         c["rev_at"] = now
@@ -624,6 +653,10 @@ def enrich_psn(items, backfill=False):
                     refresh_budget -= 1
                     refreshed += 1
                     prod = psn_product(c["pid"])
+                    if prod and prod.get("cls") in PSN_BAD_CLS:
+                        # 旧ロジックでDLC等を掴んでいた → エントリを破棄して再検索させる
+                        del cache[it["id"]]
+                        continue
                     if prod:
                         c.update(prod)
                         c["rev_at"] = now
@@ -705,23 +738,28 @@ def creators_call(token, path, body):
 
 
 def amz_search_asin(token, tag, name):
-    """タイトル名でsearchItemsし、名前検証を通った最上位のASINを返す"""
-    res = creators_call(token, "/catalog/v1/searchItems", {
-        "keywords": name[:120] + " Switch",
-        "searchIndex": "VideoGames",
-        "itemCount": 3,
-        "partnerTag": tag,
-        "resources": ["itemInfo.title"],
-    })
-    items = ((res or {}).get("searchResult") or {}).get("items") or []
+    """タイトル名でsearchItemsし、名前検証を通った最上位のASINを返す。
+
+    「タイトル + Switch」で見つからなければ「タイトルのみ」でも再検索する
+    (Amazon検索の並び順の癖でドンズバ商品が漏れるケースの救済)。
+    """
     target = norm_name(name)
     if len(target) < 4:  # 超短名は誤マッチしやすいので自動検索しない(オーバーライドで対応)
         return None
-    for it in items:
-        title = (((it.get("itemInfo") or {}).get("title") or {}).get("displayValue")) or ""
-        c = norm_name(title)
-        if target in c or difflib.SequenceMatcher(None, target, c).ratio() >= 0.8:
-            return it.get("asin")
+    for keywords in (name[:120] + " Switch", name[:120]):
+        res = creators_call(token, "/catalog/v1/searchItems", {
+            "keywords": keywords,
+            "searchIndex": "VideoGames",
+            "itemCount": 10,
+            "partnerTag": tag,
+            "resources": ["itemInfo.title"],
+        })
+        items = ((res or {}).get("searchResult") or {}).get("items") or []
+        for it in items:
+            title = (((it.get("itemInfo") or {}).get("title") or {}).get("displayValue")) or ""
+            c = norm_name(title)
+            if target in c or difflib.SequenceMatcher(None, target, c).ratio() >= 0.8:
+                return it.get("asin")
     return None
 
 
