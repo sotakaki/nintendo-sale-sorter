@@ -2,7 +2,7 @@ name: build sale page
 
 on:
   schedule:
-    - cron: '0 22 * * *'   # 07:00 JST
+    - cron: '30 15 * * *'   # 00:30 JST (eショップのセール切替=0:00の直後に取得)
   workflow_dispatch:
 
 permissions:
