@@ -1544,8 +1544,8 @@ function amazonBadge(d) {
   if (d.az) {
     var tyl = d.azt === 'dl' ? 'DLコード' : (d.azt === 'imp' ? '輸入版' : '');
     var label = 'Amazonで購入' + (d.azp
-      ? '（' + (tyl ? tyl + ' ' : '') + yen(d.azp) + '）'
-      : (tyl ? '（' + tyl + '）' : ''));
+      ? '　' + (tyl ? tyl + ' ' : '') + yen(d.azp)
+      : (tyl ? '　' + tyl : ''));
     var cheaper = d.azp && d.p != null && d.azp < d.p;
     return '<div class="amz' + (cheaper ? ' amz-low' : '') + '" data-az="' + d.az + '">' + label
       + (cheaper ? '<span class="lowtag">eショップより安い</span>' : '') + '</div>';
