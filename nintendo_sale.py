@@ -43,6 +43,7 @@ OUT_HTML = os.environ.get("NINTENDO_SALE_OUT") or os.path.join(
 SHOW_PRICE_HISTORY = False
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nintendo_sale.log")
 STEAM_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steam_cache.json")
+STEAM_OVERRIDES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steam_overrides.json")
 PRICE_HISTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "price_history.json")
 GC_CATALOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gc_catalog.json")
 PSN_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "psn_cache.json")
@@ -789,15 +790,30 @@ def creators_call(token, path, body):
         return None
 
 
-def amz_search_asin(token, tag, name):
-    """タイトル名でsearchItemsし、名前検証を通った最上位のASINを返す。
+AMZ_TYPE_RANK = {"pkg": 0, "dl": 1, "imp": 2}
+
+
+def amz_type(title):
+    """Amazon商品名から種別を推定: 国内パッケージ(pkg) / ダウンロードコード(dl) / 輸入版(imp)"""
+    t = title or ""
+    if "オンラインコード" in t or "ダウンロードコード" in t or "download code" in t.lower():
+        return "dl"
+    if re.search(r"輸入版|海外版|北米版|欧州版|アジア版|\bimport\b", t, re.IGNORECASE):
+        return "imp"
+    return "pkg"
+
+
+def amz_search_cands(token, tag, name):
+    """タイトル名でsearchItemsし、名前検証を通った候補を[(asin, 商品名), ...]で返す。
 
     「タイトル + Switch」で見つからなければ「タイトルのみ」でも再検索する
     (Amazon検索の並び順の癖でドンズバ商品が漏れるケースの救済)。
+    パッケージ/DLコード/輸入版が併売されるため、1件でなく候補全部を集めて
+    表示時にeショップ価格との比較で選び直す。
     """
     target = norm_name(name)
     if len(target) < 4:  # 超短名は誤マッチしやすいので自動検索しない(オーバーライドで対応)
-        return None
+        return []
     for keywords in (name[:120] + " Switch", name[:120]):
         res = creators_call(token, "/catalog/v1/searchItems", {
             "keywords": keywords,
@@ -807,42 +823,84 @@ def amz_search_asin(token, tag, name):
             "resources": ["itemInfo.title"],
         })
         items = ((res or {}).get("searchResult") or {}).get("items") or []
+        cands = []
         for it in items:
             title = (((it.get("itemInfo") or {}).get("title") or {}).get("displayValue")) or ""
             c = norm_name(title)
             # 部分一致は8文字以上のタイトルのみ(短名は"JARS"⊂"Jar Jar's..."型の誤爆があるため全体類似のみ)
             if ((len(target) >= 8 and target in c)
                     or difflib.SequenceMatcher(None, target, c).ratio() >= 0.8):
-                return it.get("asin")
-    return None
+                if it.get("asin") and it["asin"] not in [a for a, _ in cands]:
+                    cands.append((it["asin"], title))
+        if cands:
+            return cands[:6]
+    return []
 
 
-def amz_get_prices(token, tag, asins):
-    """getItemsで最大10件ずつbuybox価格を取得 → {asin: 円}"""
+def amz_get_info(token, tag, asins):
+    """getItemsで最大10件ずつbuybox価格+商品名を取得 → {asin: {"p": 円|None, "t": 商品名}}"""
     out = {}
     for i in range(0, len(asins), 10):
         chunk = asins[i:i + 10]
         res = creators_call(token, "/catalog/v1/getItems", {
             "itemIds": chunk,
             "partnerTag": tag,
-            "resources": ["offersV2.listings.price"],
+            "resources": ["offersV2.listings.price", "itemInfo.title"],
         })
         for it in ((res or {}).get("itemsResult") or {}).get("items") or []:
+            title = (((it.get("itemInfo") or {}).get("title") or {}).get("displayValue")) or ""
+            p = None
             for l in (it.get("offersV2") or {}).get("listings") or []:
                 if l.get("isBuyBoxWinner"):
                     amt = ((l.get("price") or {}).get("money") or {}).get("amount")
                     if amt is not None:
-                        out[it["asin"]] = int(amt)
+                        p = int(amt)
                     break
+            out[it["asin"]] = {"p": p, "t": title}
     return out
 
 
-def enrich_amazon(items, backfill=False):
-    """Amazon直リンク+現在価格を付与(テクノエッジ版用)。
+def amz_platform_ok(asin, title):
+    """Switch以外のプラットフォーム専用商品(PC版/PS4版など)を候補から外す。
 
-    ASINの優先順: 手動オーバーライド(asin_overrides.json、タイトル名 or id:商品ID)
-                → IGDB由来 → Creators API検索(キャッシュ・日次キャップつき)
+    商品名にSwitch表記があれば通し、PC/PlayStation/Xbox系の表記だけなら弾く。
+    さらにASINは発行順なので、Switch発売(2017年)前のB05番台以前のASINは
+    商品名に機種表記がなくても他機種版(例: 2007年PC版Sherlock Holmes)とみなして弾く。
+    """
+    t = (title or "").lower()
+    if "switch" in t or "スイッチ" in t:
+        return True
+    if not asin.startswith("B0") or asin < "B06":
+        return False
+    if not t:
+        return True
+    return not re.search(r"\bpc\b|windows|dvd-rom|playstation|プレイステーション|\bps[345]\b|xbox", t)
+
+
+def amz_rank(asin, casins, info, eshop_price):
+    """候補の優先順キー(小さいほど優先)。
+
+    1)eショップより安い国内pkg 2)安いDLコード 3)安い輸入版
+    4)同額のpkg/DLコード 5)同額の輸入版 6)高いpkg/DLコード 7)高い輸入版
+    価格不明の候補は最後(種別だけで順位づけ)。同順位は安いほう→pkg優先。
+    """
+    ty = (casins.get(asin) or {}).get("ty") or "pkg"
+    tyr = AMZ_TYPE_RANK.get(ty, 0)
+    ap = (info.get(asin) or {}).get("p")
+    if ap is None or eshop_price is None:
+        return (3, tyr, 10 ** 9, tyr)
+    grp = 0 if ap < eshop_price else (1 if ap == eshop_price else 2)
+    sub = tyr if grp == 0 else (1 if ty == "imp" else 0)
+    return (grp, sub, ap, tyr)
+
+
+def enrich_amazon(items, backfill=False):
+    """Amazon直リンク+現在価格+種別(パッケージ/DLコード/輸入版)を付与(テクノエッジ版用)。
+
+    候補の集め方: 手動オーバーライド(asin_overrides.json、タイトル名 or id:商品ID)は単独で最優先
+                → IGDB由来 + Creators API検索の全候補(キャッシュ・日次キャップつき)
     価格はCreators APIのbuybox価格を毎回取得(24hより古い表示をしないため)。
+    eショップのセール価格は毎日動くので、どの候補を出すかは毎ビルドamz_rankで選び直す。
     """
     try:
         with open(IGDB_ASIN, encoding="utf-8") as f:
@@ -866,6 +924,15 @@ def enrich_amazon(items, backfill=False):
             acache = json.load(f)
     except (OSError, ValueError):
         acache = {}
+    # v2移行: 旧形式{id:{asin,checked}}はno-matchの記憶だけ引き継ぎ、
+    # ASINあり項目は候補リスト(パッケージ/DLコード/輸入版)収集のため再検索させる
+    if "_v" not in acache:
+        old = acache
+        acache = {"_v": 2, "items": {}, "asins": {}}
+        for k, v in old.items():
+            if isinstance(v, dict) and not v.get("asin"):
+                acache["items"][k] = {"cands": [], "checked": v.get("checked", 0)}
+    citems, casins = acache["items"], acache["asins"]
     cid, sec = creators_creds()
     token = creators_token(cid, sec) if cid else None
     tag = os.environ.get("AMAZON_TAG", "technoedge-22")
@@ -876,33 +943,63 @@ def enrich_amazon(items, backfill=False):
     found = 0
     try:
         for it in items:
-            az = (ov_by_id.get(it["id"])
-                  or overrides.get(norm_name(it["n"]))
-                  or by_steam.get(str(it.get("appid") or ""))
-                  or by_name.get(norm_name(it["n"])))
-            if not az:
-                c = acache.get(it["id"])
-                if c is not None and (c.get("asin")
-                                      or now - c.get("checked", 0) < AMZ_NOMATCH_RECHECK_DAYS * day):
-                    az = c.get("asin")
+            forced = ov_by_id.get(it["id"]) or overrides.get(norm_name(it["n"]))
+            cands = []
+            if forced:
+                cands = [forced]  # 手動オーバーライドは編集判断として常に最優先
+            else:
+                for a in (by_steam.get(str(it.get("appid") or "")),
+                          by_name.get(norm_name(it["n"]))):
+                    if a and a not in cands:
+                        cands.append(a)
+                ce = citems.get(it["id"])
+                if ce is not None and (ce.get("cands")
+                                       or now - ce.get("checked", 0) < AMZ_NOMATCH_RECHECK_DAYS * day):
+                    for a in ce.get("cands") or []:
+                        if a not in cands:
+                            cands.append(a)
                 elif token and budget > 0:
                     budget -= 1
                     searched += 1
-                    az = amz_search_asin(token, tag, it["n"])
-                    acache[it["id"]] = {"asin": az, "checked": now}
-            if az:
-                it["az"] = az
-                found += 1
-        # Amazon現在価格(buybox)を一括取得してeショップ価格と比較可能にする
+                    hits = amz_search_cands(token, tag, it["n"])
+                    citems[it["id"]] = {"cands": [a for a, _ in hits], "checked": now}
+                    for a, t in hits:
+                        casins[a] = {"t": t[:120], "ty": amz_type(t)}
+                        if a not in cands:
+                            cands.append(a)
+            if cands:
+                it["_azc"] = cands
+                it["_azforced"] = bool(forced)
+        # 全候補の現在価格(buybox)+商品名を取得し、
+        # 種別×eショップ価格比較の優先順(amz_rank)で表示する1件を選ぶ
         priced = 0
+        info = {}
         if token:
-            asins = sorted({it["az"] for it in items if it.get("az")})
-            prices = amz_get_prices(token, tag, asins)
-            for it in items:
-                p = prices.get(it.get("az"))
-                if p:
-                    it["azp"] = p
-                    priced += 1
+            asins = sorted({a for it in items for a in it.get("_azc", [])})
+            info = amz_get_info(token, tag, asins)
+            for a, v in info.items():
+                if v.get("t"):  # getItemsの商品名で種別判定を毎日更新(オーバーライド/IGDB由来も拾う)
+                    casins[a] = {"t": v["t"][:120], "ty": amz_type(v["t"])}
+        for it in items:
+            cands = it.pop("_azc", None)
+            forced = it.pop("_azforced", False)
+            if not forced and cands:
+                # 手動オーバーライド以外は他機種版(PC/PS4等)を候補から除外
+                cands = [a for a in cands
+                         if amz_platform_ok(a, (casins.get(a) or {}).get("t"))]
+            if not cands:
+                continue
+            best = cands[0] if forced else min(
+                cands, key=lambda a: amz_rank(a, casins, info, it.get("p")))
+            it["az"] = best
+            found += 1
+            p = (info.get(best) or {}).get("p")
+            if p:
+                it["azp"] = p
+                priced += 1
+            ty = (casins.get(best) or {}).get("ty")
+            if ty in ("dl", "imp"):  # DLコード・輸入版は必ず明示(表示側でラベルにする)
+                it["azt"] = ty
         log.info("amazon: direct links=%d/%d searched=%d priced=%d (overrides=%d)",
                  found, len(items), searched, priced, len(overrides))
     finally:
@@ -1029,12 +1126,27 @@ def steam_reviews(appid):
 
 
 def enrich_steam(items, backfill=False):
-    """itemsにSteamレビュー情報(sa/sp/sn)を付与。照会結果はキャッシュして差分だけ叩く"""
+    """itemsにSteamレビュー情報(sa/sp/sn)を付与。照会結果はキャッシュして差分だけ叩く
+
+    steam_overrides.json(キー=タイトル名 or id:商品ID、値=appid or null)で
+    自動マッチングの誤りを手動修正できる。null=Steamマッチ禁止
+    (例:「小さな虫」がREDDEERと無関係の「Little Bug」に誤マッチしたケース)。
+    """
     try:
         with open(STEAM_CACHE, encoding="utf-8") as f:
             cache = json.load(f)
     except (OSError, ValueError):
         cache = {}
+    st_ov, st_ov_by_id = {}, {}
+    try:
+        with open(STEAM_OVERRIDES, encoding="utf-8") as f:
+            for k, v in json.load(f).items():
+                if k.startswith("id:"):
+                    st_ov_by_id[k[3:]] = v
+                else:
+                    st_ov[norm_name(k)] = v
+    except (OSError, ValueError):
+        pass
     try:
         # Steam検索で見つからなかった日本語名タイトルをIGDBの地域別名で補完
         enrich_igdb_steam(items, cache, backfill=backfill)
@@ -1054,9 +1166,16 @@ def enrich_steam(items, backfill=False):
     try:
         for it in items:
             c = cache.get(it["id"])
+            # 0) 手動オーバーライド(誤マッチ修正)。適用済みなら以降の自動マッチはしない
+            ov = (st_ov_by_id[it["id"]] if it["id"] in st_ov_by_id
+                  else st_ov.get(norm_name(it["n"]), "-"))
+            if ov != "-":
+                if c is None or c.get("appid") != ov:
+                    c = {"appid": ov, "checked": now, "rev": None, "rev_at": 0}
+                    cache[it["id"]] = c
             # 1) appidマッチング(未照会 or マッチなしの定期再確認)
-            if c is None or (c.get("appid") is None
-                             and now - c.get("checked", 0) > STEAM_NOMATCH_RECHECK_DAYS * day):
+            elif c is None or (c.get("appid") is None
+                               and now - c.get("checked", 0) > STEAM_NOMATCH_RECHECK_DAYS * day):
                 if search_budget > 0:
                     search_budget -= 1
                     searched += 1
@@ -1189,9 +1308,9 @@ input[type=search] { width:180px; }
 .koty { font-size:9px; margin-top:2px; display:inline-block; background:#7b1113; color:#fff; border-radius:3px; padding:1px 5px; font-weight:700; cursor:pointer; }
 .koty:hover { opacity:.85; }
 .mk.mkbottom { margin-top:6px; padding-top:4px; border-top:1px solid var(--line); }
-.mkr { font-size:10px; margin-top:1px; color:var(--sub); }
+.mkr { font-size:10px; margin-top:1px; color:var(--sub); padding:4px 0; }
 .mkr.none { font-size:9px; }
-.mc { font-weight:700; cursor:pointer; }
+.mc { font-weight:700; cursor:pointer; display:inline-block; padding:6px 4px; margin:-6px -4px; }
 .mc:hover { text-decoration:underline; }
 /* 出典色はカラーユニバーサルデザイン(Okabe-Ito)配色 */
 .mc.steam { color:#009E73; }
@@ -1411,7 +1530,10 @@ function lowBadge(d) {
 function amazonBadge(d) {
   if (!AFF_TAG) return '';
   if (d.az) {
-    var label = 'Amazonで購入' + (d.azp ? '（' + yen(d.azp) + '）' : '');
+    var tyl = d.azt === 'dl' ? 'DLコード' : (d.azt === 'imp' ? '輸入版' : '');
+    var label = 'Amazonで購入' + (d.azp
+      ? '（' + (tyl ? tyl + ' ' : '') + yen(d.azp) + '）'
+      : (tyl ? '（' + tyl + '）' : ''));
     var cheaper = d.azp && d.p != null && d.azp < d.p;
     return '<div class="amz' + (cheaper ? ' amz-low' : '') + '" data-az="' + d.az + '">' + label
       + (cheaper ? '<span class="lowtag">eショップより安い</span>' : '') + '</div>';
@@ -1513,11 +1635,12 @@ function track(e) {
 }
 grid.addEventListener('click', function(e) {
   track(e);
-  var mc = e.target.closest('.mc');
-  if (mc) {
+  var mkr = e.target.closest('.mkr');
+  if (mkr) {  // チップ行全体でカードのリンクを無効化(チップ間の誤タップでストアに飛ぶのを防ぐ)
     e.preventDefault();
     e.stopPropagation();
-    var u = mc.getAttribute('data-u');
+    var mc = e.target.closest('.mc');
+    var u = mc && mc.getAttribute('data-u');
     if (u) window.open(u, '_blank', 'noopener');
     return;
   }
@@ -1577,7 +1700,10 @@ render();
 """
 
 AFF_NOTICE_HTML = ('<div id="affnotice">【PR】本ページ内のAmazonリンクは'
-                   'アフィリエイト広告です。購入により当サイト運営者に紹介料が支払われる場合があります。</div>')
+                   'アフィリエイト広告です。購入により当サイト運営者に紹介料が支払われる場合があります。'
+                   'Amazonボタンは国内パッケージ版を優先し、ダウンロードコード版は「DLコード」、'
+                   '輸入版(海外パッケージ)は「輸入版」とボタン内に明記しています。'
+                   '輸入版は言語・パッケージ仕様が国内版と異なる場合があります。</div>')
 
 # ランキング内に挿入するプリペイドカード枠(テクノエッジ版のみ、通常カードと別デザイン+PR明記)
 PREPAID_ASIN = "B09998HHSG"  # ニンテンドープリペイド番号 5000円 オンラインコード版
@@ -1685,6 +1811,8 @@ def build_html(items, te_mode=False, out_path=None):
             d["az"] = it["az"]
             if it.get("azp"):
                 d["azp"] = it["azp"]
+            if it.get("azt"):
+                d["azt"] = it["azt"]
         data.append(d)
     now = time.strftime("%Y-%m-%d %H:%M")
     # te_mode: Amazonアフィリエイトリンク+PR表記+テクノエッジのトンマナ+iframeリサイズを有効化
