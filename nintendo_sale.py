@@ -1386,7 +1386,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 %AFFNOTICE%
 <div id="count"></div>
 <div id="grid"></div>
-<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>判定表記は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。「クソゲーオブザイヤー」は<a href="https://koty.wiki/" target="_blank" rel="noopener">KOTY据置Wiki</a>の受賞歴です。<br>各カード下部のメーカー名の下に、同メーカーの現セール中作品の最高評価(↑)と最低評価(↓)を表示しています。色は出典: <span style="color:#009E73;font-weight:700">Steam(〜%)</span> / <span style="color:#0072B2;font-weight:700">PS Store(★〜)</span> / <span style="color:#B87A00;font-weight:700">ゲームカタログ@Wiki(判定語)</span> / <span style="color:#D55E00;font-weight:700">クソゲーオブザイヤー(KOTY〜)</span>。表記形式でも判別できます。クリックで該当作品のページへ。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
+<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>判定表記は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。「クソゲーオブザイヤー」は<a href="https://koty.wiki/" target="_blank" rel="noopener">KOTY据置Wiki</a>の受賞歴です。<br><span id="mklegend">各カード下部のメーカー名の下に、同メーカーの現セール中作品の最高評価(↑)と最低評価(↓)を表示しています。色は出典: <span style="color:#009E73;font-weight:700">Steam(〜%)</span> / <span style="color:#0072B2;font-weight:700">PS Store(★〜)</span> / <span style="color:#B87A00;font-weight:700">ゲームカタログ@Wiki(判定語)</span> / <span style="color:#D55E00;font-weight:700">クソゲーオブザイヤー(KOTY〜)</span>。表記形式でも判別できます。クリックで該当作品のページへ。<br></span>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
 <script>
 var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
@@ -1608,7 +1608,9 @@ var makerStats = (function() {
   });
   return out;
 })();
+var SHOW_MAKER_CHIPS = false;  // 2026-08-25 一旦非表示(↑↓の意味づけ・出典間比較のロジックを再検討中)
 function makerChips(d) {
+  if (!SHOW_MAKER_CHIPS) return '';
   var st = makerStats[d.mk];
   if (!st) return '';
   if (!st.rated) return '<div class="mkr none">メーカー評価作なし(0/' + st.total + '本)</div>';
@@ -1618,6 +1620,7 @@ function makerChips(d) {
     + '<span class="mc down ' + st.worst.c + '" data-u="' + esc(st.worst.u) + '" title="' + esc(st.worst.t) + '">↓' + esc(st.worst.v) + '</span>'
     + '</div>';
 }
+if (!SHOW_MAKER_CHIPS) { var _ml = document.getElementById('mklegend'); if (_ml) _ml.style.display = 'none'; }
 // クリック計測(テクノエッジ版のみ、GA4イベント)。リンク遷移は妨げない
 function track(e) {
   if (typeof gtag !== 'function') return;
