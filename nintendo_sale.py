@@ -185,6 +185,58 @@ def collect():
     return items
 
 
+REG_PRICE_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "regular_prices.json")
+REG_RECHECK_DAYS = 30
+
+
+def enrich_regular_prices(items):
+    """実際の定価をshopper-products一括API(24件/リクエスト)で取得する。
+
+    従来はセール価格と割引率ラベルからの逆算だったが、ラベルは整数丸めのため
+    高割引帯で大きくズレる(例: 98%OFF表記の実態98.74%OFF → 逆算9,950円 vs 実定価15,795円)。
+    """
+    try:
+        with open(REG_PRICE_CACHE, encoding="utf-8") as f:
+            cache = json.load(f)
+    except (OSError, ValueError):
+        cache = {}
+    now = time.time()
+    day = 86400
+    need = [it["id"] for it in items
+            if it["id"] not in cache or now - cache[it["id"]].get("at", 0) > REG_RECHECK_DAYS * day]
+    fetched = 0
+    if need:
+        try:
+            token = get_guest_token()
+            for i in range(0, len(need), 24):
+                chunk = need[i:i + 24]
+                q = urllib.parse.urlencode({"ids": ",".join(chunk), "currency": "JPY",
+                                            "locale": "ja-JP", "siteId": SITE_ID})
+                url = f"{API_BASE}/product/shopper-products/v1/organizations/{ORG_ID}/products?{q}"
+                status, _, body = http(url, headers={"Authorization": f"Bearer {token}"})
+                if status != 200:
+                    log.warning("regular prices batch %d -> HTTP %s", i // 24, status)
+                    continue
+                for p in json.loads(body).get("data", []):
+                    rp = p.get("c_original_regularPriceOnSale")
+                    cache[p["id"]] = {"rp": int(rp) if rp else None, "at": now}
+                fetched += len(chunk)
+                time.sleep(0.3)
+        except Exception:
+            log.exception("regular prices fetch failed; continuing with cache")
+    hit = 0
+    for it in items:
+        rp = (cache.get(it["id"]) or {}).get("rp")
+        if rp and it.get("p") and rp > it["p"]:
+            it["rp"] = rp
+            hit += 1
+    tmp = REG_PRICE_CACHE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False)
+    os.replace(tmp, REG_PRICE_CACHE)
+    log.info("regular prices: fetched=%d attached=%d/%d cached=%d", fetched, hit, len(items), len(cache))
+
+
 def update_price_history(items):
     """セール価格の自前履歴を更新し、itemsに過去最安情報を付与する。
 
@@ -1216,7 +1268,7 @@ function prepaidCard() {
 }
 function cardHtml(d) {
   return (function(d) {
-    var orig = (!d.mx && d.p != null && d.pct < 100) ? Math.round(d.p / (1 - d.pct/100)) : null;
+    var orig = d.rp || ((!d.mx && d.p != null && d.pct <= 80) ? Math.round(d.p / (1 - d.pct/100)) : null);
     return '<a class="card" href="https://store-jp.nintendo.com/item/software/D' + d.id + '" target="_blank" rel="noopener">'
       + (d.im
          ? (AFF_TAG
@@ -1483,6 +1535,8 @@ def build_html(items, te_mode=False, out_path=None):
     data = []
     for it in items:
         d = {k: it[k] for k in ("id", "n", "p", "pct", "mx", "mk", "im")}
+        if it.get("rp"):
+            d["rp"] = it["rp"]
         # Switch 2版: 専用商品(BEE)のほか、「Nintendo Switch 2 Edition」型のアップグレード版はHACコードのため名前でも判定
         if it.get("pc") == "BEE" or "switch 2 edition" in it["n"].lower():
             d["hw"] = 1
@@ -1540,6 +1594,7 @@ def main():
         if len(items) < 100:
             raise RuntimeError(f"suspiciously few items: {len(items)} — keeping previous HTML")
         update_price_history(items)
+        enrich_regular_prices(items)
         enrich_game_catalog(items)
         enrich_koty(items)
         try:
