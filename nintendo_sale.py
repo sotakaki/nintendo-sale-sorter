@@ -810,7 +810,9 @@ def amz_search_asin(token, tag, name):
         for it in items:
             title = (((it.get("itemInfo") or {}).get("title") or {}).get("displayValue")) or ""
             c = norm_name(title)
-            if target in c or difflib.SequenceMatcher(None, target, c).ratio() >= 0.8:
+            # 部分一致は8文字以上のタイトルのみ(短名は"JARS"⊂"Jar Jar's..."型の誤爆があるため全体類似のみ)
+            if ((len(target) >= 8 and target in c)
+                    or difflib.SequenceMatcher(None, target, c).ratio() >= 0.8):
                 return it.get("asin")
     return None
 
@@ -1186,7 +1188,8 @@ input[type=search] { width:180px; }
 .gc.good { color:#2e7d32; } .gc.mid { color:#b26a00; } .gc.bad { color:#c62828; } .gc.na { color:var(--sub); }
 .koty { font-size:9px; margin-top:2px; display:inline-block; background:#7b1113; color:#fff; border-radius:3px; padding:1px 5px; font-weight:700; cursor:pointer; }
 .koty:hover { opacity:.85; }
-.mkr { font-size:10px; margin-top:2px; color:var(--sub); }
+.mk.mkbottom { margin-top:6px; padding-top:4px; border-top:1px solid var(--line); }
+.mkr { font-size:10px; margin-top:1px; color:var(--sub); }
 .mkr.none { font-size:9px; }
 .mc { font-weight:700; cursor:pointer; }
 .mc:hover { text-decoration:underline; }
@@ -1264,7 +1267,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 %AFFNOTICE%
 <div id="count"></div>
 <div id="grid"></div>
-<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>判定表記は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。「クソゲーオブザイヤー」は<a href="https://koty.wiki/" target="_blank" rel="noopener">KOTY据置Wiki</a>の受賞歴です。<br>評価情報のない作品には、同メーカーの現セール中作品の最高評価(↑)と最低評価(↓)を表示しています。色は出典: <span style="color:#009E73;font-weight:700">Steam(〜%)</span> / <span style="color:#0072B2;font-weight:700">PS Store(★〜)</span> / <span style="color:#B87A00;font-weight:700">ゲームカタログ@Wiki(判定語)</span> / <span style="color:#D55E00;font-weight:700">クソゲーオブザイヤー(KOTY〜)</span>。表記形式でも判別できます。クリックで該当作品のページへ。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
+<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>判定表記は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。「クソゲーオブザイヤー」は<a href="https://koty.wiki/" target="_blank" rel="noopener">KOTY据置Wiki</a>の受賞歴です。<br>各カード下部のメーカー名の下に、同メーカーの現セール中作品の最高評価(↑)と最低評価(↓)を表示しています。色は出典: <span style="color:#009E73;font-weight:700">Steam(〜%)</span> / <span style="color:#0072B2;font-weight:700">PS Store(★〜)</span> / <span style="color:#B87A00;font-weight:700">ゲームカタログ@Wiki(判定語)</span> / <span style="color:#D55E00;font-weight:700">クソゲーオブザイヤー(KOTY〜)</span>。表記形式でも判別できます。クリックで該当作品のページへ。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
 <script>
 var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
@@ -1327,7 +1330,8 @@ function cardHtml(d) {
             ? '<img class="lz" data-src="' + IMG + d.im + '?sw=346&strip=false" alt="">'
             : '<img loading="lazy" src="' + IMG + d.im + '?sw=346&strip=false" alt="">')
          : '<div style="aspect-ratio:1;background:#ddd"></div>')
-      + '<div class="b"><div class="n">' + esc(d.n) + '</div><div class="mk">' + (d.hw ? '<span class="hw2">Switch 2</span>' : '') + esc(d.mk) + '</div>'
+      + '<div class="b"><div class="n">' + esc(d.n) + '</div>'
+      + (d.hw ? '<div class="mk"><span class="hw2">Switch 2</span></div>' : '')
       + '<div class="row"><span class="off">' + (d.mx ? '<small>最大</small>' : '') + d.pct + '<small>%OFF</small></span>'
       + '<span class="pr"><b>' + yen(d.p) + '</b>' + (d.mx ? '〜' : '') + '</span></div>'
       + (orig ? '<div class="mk">定価 ' + yen(orig) + '</div>' : '')
@@ -1336,8 +1340,9 @@ function cardHtml(d) {
       + gcBadge(d)
       + steamBadge(d)
       + psnBadge(d)
-      + makerChips(d)
       + amazonBadge(d)
+      + '<div class="mk mkbottom">' + esc(d.mk) + '</div>'
+      + makerChips(d)
       + '</div></a>';
   })(d);
 }
@@ -1406,7 +1411,7 @@ function lowBadge(d) {
 function amazonBadge(d) {
   if (!AFF_TAG) return '';
   if (d.az) {
-    var label = 'Amazonで購入' + (d.azp ? '・' + yen(d.azp) : '');
+    var label = 'Amazonで購入' + (d.azp ? '（' + yen(d.azp) + '）' : '');
     var cheaper = d.azp && d.p != null && d.azp < d.p;
     return '<div class="amz' + (cheaper ? ' amz-low' : '') + '" data-az="' + d.az + '">' + label
       + (cheaper ? '<span class="lowtag">eショップより安い</span>' : '') + '</div>';
@@ -1415,12 +1420,12 @@ function amazonBadge(d) {
 }
 function psnBadge(d) {
   if (d.pv == null) return '';
-  var s = 'PS ★' + d.pv.toFixed(1) + '(' + d.pn.toLocaleString('ja-JP') + ')';
+  var s = 'PS ★' + d.pv.toFixed(1) + '（' + d.pn.toLocaleString('ja-JP') + '）';
   if (d.pp != null) {
-    if (d.pp === 0) s += '・無料';
+    if (d.pp === 0) s += '無料';
     else {
-      s += '・' + yen(d.pp);
-      if (d.pb != null && d.pp < d.pb) s += ' <span class="sale">セール中</span>';
+      s += yen(d.pp);
+      if (d.pb != null && d.pp < d.pb) s += '（' + Math.round((1 - d.pp / d.pb) * 100) + '%OFF）';
     }
   }
   return '<div class="psn"' + (d.pid ? ' data-pid="' + d.pid + '"' : '') + '>' + s + '</div>';
@@ -1437,8 +1442,8 @@ function gcBadge(d) {
 function steamBadge(d) {
   if (d.sp == null) return '';
   var cls = d.sp >= 70 ? 'g' : d.sp >= 40 ? 'y' : 'r';
-  var s = 'Steam ' + d.sp + '%好評・' + d.sn.toLocaleString('ja-JP') + '件';
-  if (d.stp) s += '・' + yen(d.stp) + (d.std ? '(' + d.std + '%OFF中)' : '');
+  var s = 'Steam ' + d.sp + '%好評（' + d.sn.toLocaleString('ja-JP') + '件）';
+  if (d.stp) s += yen(d.stp) + (d.std ? '（' + d.std + '%OFF）' : '');
   return '<div class="stm ' + cls + '" data-app="' + d.sa + '">' + s + '</div>';
 }
 // メーカー実績チップ: レビューが無いタイトルに、同メーカーの最高/最低評価作を出典色付きで表示
@@ -1482,7 +1487,6 @@ var makerStats = (function() {
   return out;
 })();
 function makerChips(d) {
-  if (d.sp != null || d.pv != null || d.gv || d.kt) return '';  // 自前の評価があるカードには不要
   var st = makerStats[d.mk];
   if (!st) return '';
   if (!st.rated) return '<div class="mkr none">メーカー評価作なし(0/' + st.total + '本)</div>';
