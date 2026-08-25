@@ -1078,6 +1078,46 @@ def enrich_steam(items, backfill=False):
                 it["sa"] = c["appid"]
                 it["sp"] = rev.get("sp")
                 it["sn"] = rev.get("sn")
+        # Steam現在価格(appdetailsのprice_overviewフィルタは複数appidまとめ取り可)
+        try:
+            id_by_app = {}
+            for it in items:
+                c2 = cache.get(it["id"]) or {}
+                if c2.get("appid"):
+                    id_by_app.setdefault(c2["appid"], []).append(it["id"])
+            stale = [a for a, iids in id_by_app.items()
+                     if now - (cache.get(iids[0], {}).get("spr_at") or 0) > 0.8 * day]
+            for i in range(0, len(stale), 50):
+                chunk = stale[i:i + 50]
+                res = steam_get("https://store.steampowered.com/api/appdetails?appids=%s"
+                                "&cc=JP&l=japanese&filters=price_overview"
+                                % ",".join(map(str, chunk)))
+                for a in chunk:
+                    e = (res or {}).get(str(a)) or {}
+                    data_f = e.get("data")
+                    po = data_f.get("price_overview") if isinstance(data_f, dict) else None
+                    for iid in id_by_app[a]:
+                        c2 = cache.get(iid)
+                        if c2 is None:
+                            continue
+                        c2["spr_at"] = now
+                        if po and po.get("final"):
+                            c2["spr"] = int(po["final"] // 100)
+                            c2["spd"] = po.get("discount_percent", 0)
+                        else:
+                            c2.pop("spr", None)
+                            c2.pop("spd", None)
+            priced = 0
+            for it in items:
+                c2 = cache.get(it["id"]) or {}
+                if c2.get("spr"):
+                    it["stp"] = c2["spr"]
+                    if c2.get("spd"):
+                        it["std"] = c2["spd"]
+                    priced += 1
+            log.info("steam prices: refreshed_apps=%d priced=%d", len(stale), priced)
+        except Exception:
+            log.exception("steam prices failed; continuing")
     finally:
         tmp = STEAM_CACHE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -1146,6 +1186,18 @@ input[type=search] { width:180px; }
 .gc.good { color:#2e7d32; } .gc.mid { color:#b26a00; } .gc.bad { color:#c62828; } .gc.na { color:var(--sub); }
 .koty { font-size:9px; margin-top:2px; display:inline-block; background:#7b1113; color:#fff; border-radius:3px; padding:1px 5px; font-weight:700; cursor:pointer; }
 .koty:hover { opacity:.85; }
+.mkr { font-size:10px; margin-top:2px; color:var(--sub); }
+.mkr.none { font-size:9px; }
+.mc { font-weight:700; cursor:pointer; }
+.mc:hover { text-decoration:underline; }
+/* 出典色はカラーユニバーサルデザイン(Okabe-Ito)配色 */
+.mc.steam { color:#009E73; }
+.mc.psn { color:#0072B2; }
+.mc.gc { color:#B87A00; }
+.mc.koty { color:#D55E00; }
+@media (prefers-color-scheme: dark) {
+  .mc.steam { color:#2fd6a5; } .mc.psn { color:#56B4E9; } .mc.gc { color:#E69F00; } .mc.koty { color:#ff8a4d; }
+}
 @media (prefers-color-scheme: dark) { .gc.good { color:#7bc67e; } .gc.mid { color:#e0a34e; } .gc.bad { color:#e57373; } }
 .psn { font-size:10px; margin-top:2px; cursor:pointer; color:#0057b8; }
 .psn:hover { text-decoration:underline; }
@@ -1212,7 +1264,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 %AFFNOTICE%
 <div id="count"></div>
 <div id="grid"></div>
-<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>判定表記は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。「クソゲーオブザイヤー」は<a href="https://koty.wiki/" target="_blank" rel="noopener">KOTY据置Wiki</a>の受賞歴です。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
+<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>判定表記は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。「クソゲーオブザイヤー」は<a href="https://koty.wiki/" target="_blank" rel="noopener">KOTY据置Wiki</a>の受賞歴です。<br>評価情報のない作品には、同メーカーの現セール中作品の最高評価(↑)と最低評価(↓)を表示しています。色は出典: <span style="color:#009E73;font-weight:700">Steam(〜%)</span> / <span style="color:#0072B2;font-weight:700">PS Store(★〜)</span> / <span style="color:#B87A00;font-weight:700">ゲームカタログ@Wiki(判定語)</span> / <span style="color:#D55E00;font-weight:700">クソゲーオブザイヤー(KOTY〜)</span>。表記形式でも判別できます。クリックで該当作品のページへ。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
 <script>
 var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
@@ -1284,6 +1336,7 @@ function cardHtml(d) {
       + gcBadge(d)
       + steamBadge(d)
       + psnBadge(d)
+      + makerChips(d)
       + amazonBadge(d)
       + '</div></a>';
   })(d);
@@ -1384,7 +1437,60 @@ function gcBadge(d) {
 function steamBadge(d) {
   if (d.sp == null) return '';
   var cls = d.sp >= 70 ? 'g' : d.sp >= 40 ? 'y' : 'r';
-  return '<div class="stm ' + cls + '" data-app="' + d.sa + '">Steam ' + d.sp + '%好評・' + d.sn.toLocaleString('ja-JP') + '件</div>';
+  var s = 'Steam ' + d.sp + '%好評・' + d.sn.toLocaleString('ja-JP') + '件';
+  if (d.stp) s += '・' + yen(d.stp) + (d.std ? '(' + d.std + '%OFF中)' : '');
+  return '<div class="stm ' + cls + '" data-app="' + d.sa + '">' + s + '</div>';
+}
+// メーカー実績チップ: レビューが無いタイトルに、同メーカーの最高/最低評価作を出典色付きで表示
+// 色=出典(凡例はフッター): steam / psn / gc(カタログ) / koty
+var makerStats = (function() {
+  var by = {};
+  DATA.forEach(function(d) { (by[d.mk] = by[d.mk] || []).push(d); });
+  function sigOf(d) {
+    // その作品の代表シグナル候補: [内部スコア, 表示値, 出典クラス, リンクURL]
+    var sigs = [];
+    if (d.kt) sigs.push([5, 'KOTY' + (d.kt.indexOf('大賞') >= 0 ? '大賞' : '次点'), 'koty', 'https://koty.wiki/Awarded']);
+    if (d.gv) {
+      var s = d.gv === '良作' ? 85 : (/クソゲー|劣化|不安定|シリ不/.test(d.gv) ? 10 : 50);
+      sigs.push([s, d.gv, 'gc', d.gu || 'https://w.atwiki.jp/gcmatome/']);
+    }
+    if (d.sp != null && (d.sn || 0) >= 20) sigs.push([d.sp, d.sp + '%', 'steam', 'https://store.steampowered.com/app/' + d.sa + '/']);
+    if (d.pv != null && (d.pn || 0) >= 50) sigs.push([d.pv * 20, '★' + d.pv.toFixed(1), 'psn', d.pid ? 'https://store.playstation.com/ja-jp/product/' + d.pid : 'https://store.playstation.com/']);
+    return sigs;
+  }
+  var out = {};
+  Object.keys(by).forEach(function(mk) {
+    var rated = [];
+    by[mk].forEach(function(d) {
+      var sigs = sigOf(d);
+      if (sigs.length) {
+        var avg = sigs.reduce(function(a, s){ return a + s[0]; }, 0) / sigs.length;
+        rated.push({d: d, sigs: sigs, avg: avg});
+      }
+    });
+    var st = {total: by[mk].length, rated: rated.length};
+    if (rated.length) {
+      rated.sort(function(a, b){ return a.avg - b.avg; });
+      var worst = rated[0], best = rated[rated.length - 1];
+      var bs = best.sigs.slice().sort(function(a, b){ return b[0] - a[0]; })[0];
+      var ws = worst.sigs.slice().sort(function(a, b){ return a[0] - b[0]; })[0];
+      st.best = {v: bs[1], c: bs[2], u: bs[3], t: best.d.n};
+      st.worst = {v: ws[1], c: ws[2], u: ws[3], t: worst.d.n};
+    }
+    out[mk] = st;
+  });
+  return out;
+})();
+function makerChips(d) {
+  if (d.sp != null || d.pv != null || d.gv || d.kt) return '';  // 自前の評価があるカードには不要
+  var st = makerStats[d.mk];
+  if (!st) return '';
+  if (!st.rated) return '<div class="mkr none">メーカー評価作なし(0/' + st.total + '本)</div>';
+  return '<div class="mkr">'
+    + '<span class="mc up ' + st.best.c + '" data-u="' + esc(st.best.u) + '" title="' + esc(st.best.t) + '">↑' + esc(st.best.v) + '</span>'
+    + '／'
+    + '<span class="mc down ' + st.worst.c + '" data-u="' + esc(st.worst.u) + '" title="' + esc(st.worst.t) + '">↓' + esc(st.worst.v) + '</span>'
+    + '</div>';
 }
 // クリック計測(テクノエッジ版のみ、GA4イベント)。リンク遷移は妨げない
 function track(e) {
@@ -1403,6 +1509,14 @@ function track(e) {
 }
 grid.addEventListener('click', function(e) {
   track(e);
+  var mc = e.target.closest('.mc');
+  if (mc) {
+    e.preventDefault();
+    e.stopPropagation();
+    var u = mc.getAttribute('data-u');
+    if (u) window.open(u, '_blank', 'noopener');
+    return;
+  }
   var kb = e.target.closest('.koty');
   if (kb) {
     e.preventDefault();
@@ -1489,6 +1603,7 @@ select, input[type=search] { border-radius:4px; background:#fff; color:#1f2346; 
 .gc.good { color:#2e7d32; } .gc.mid { color:#b26a00; } .gc.bad { color:#c62828; } .gc.na { color:#6b7089; }
 .low.tie { color:#2e7d32; }
 .psn { color:#0057b8; }
+.mc.steam { color:#009E73; } .mc.psn { color:#0072B2; } .mc.gc { color:#B87A00; } .mc.koty { color:#D55E00; }
 .amz { color:#0019ff; border-color:#0019ff; border-radius:4px; }
 .amz:hover { background:rgba(0,25,255,.06); }
 .amz.amz-low { color:#c62828; border-color:#c62828; font-weight:700; }
@@ -1542,6 +1657,10 @@ def build_html(items, te_mode=False, out_path=None):
             d["hw"] = 1
         if it.get("sa"):
             d["sa"], d["sp"], d["sn"] = it["sa"], it["sp"], it["sn"]
+            if it.get("stp"):
+                d["stp"] = it["stp"]
+                if it.get("std"):
+                    d["std"] = it["std"]
         if SHOW_PRICE_HISTORY and it.get("hm") is not None:
             d["hm"], d["hd"] = it["hm"], it["hd"]
             if it.get("nl"):
