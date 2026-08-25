@@ -511,11 +511,12 @@ def kata_to_hira(s):
 
 def psn_get_token():
     """npsso(env PSN_NPSSO または .psn_npsso) → アプリAPI用アクセストークン"""
-    npsso = os.environ.get("PSN_NPSSO", "").strip()
+    # BOM(﻿)はstrip()で消えず、Cookieヘッダーのlatin-1エンコードで例外になるので明示除去
+    npsso = os.environ.get("PSN_NPSSO", "").strip().strip("﻿\"'")
     if not npsso:
         try:
-            with open(PSN_NPSSO_FILE, encoding="utf-8") as f:
-                npsso = f.read().strip()
+            with open(PSN_NPSSO_FILE, encoding="utf-8-sig") as f:
+                npsso = f.read().strip().strip("﻿\"'")
         except OSError:
             return None
     q = urllib.parse.urlencode({
@@ -750,14 +751,16 @@ _last_amz_req = [0.0]
 
 
 def creators_creds():
-    cid = os.environ.get("CREATORS_CLIENT_ID", "").strip()
-    sec = os.environ.get("CREATORS_CLIENT_SECRET", "").strip()
+    def clean(s):
+        return s.strip().strip("﻿\"'")  # シークレットのBOM/引用符混入対策
+    cid = clean(os.environ.get("CREATORS_CLIENT_ID", ""))
+    sec = clean(os.environ.get("CREATORS_CLIENT_SECRET", ""))
     if cid and sec:
         return cid, sec
     try:
-        with open(CREATORS_FILE, encoding="utf-8") as f:
+        with open(CREATORS_FILE, encoding="utf-8-sig") as f:
             parts = f.read().split()
-        return parts[0], parts[1]
+        return clean(parts[0]), clean(parts[1])
     except (OSError, IndexError):
         return None, None
 
@@ -766,12 +769,15 @@ def creators_token(cid, sec):
     data = urllib.parse.urlencode({
         "grant_type": "client_credentials", "client_id": cid,
         "client_secret": sec, "scope": "creatorsapi::default"}).encode()
-    status, _, body = http(AMZ_TOKEN_URL, data=data,
-                           headers={"Content-Type": "application/x-www-form-urlencoded"})
-    if status != 200:
-        log.warning("creators api: token failed %s", status)
-        return None
-    return json.loads(body)["access_token"]
+    for attempt in (1, 2):  # LWAの一時的な失敗に備えて1回だけリトライ
+        status, _, body = http(AMZ_TOKEN_URL, data=data,
+                               headers={"Content-Type": "application/x-www-form-urlencoded"})
+        if status == 200:
+            return json.loads(body)["access_token"]
+        log.warning("creators api: token failed %s (attempt %d) %s",
+                    status, attempt, (body or b"")[:120])
+        time.sleep(3)
+    return None
 
 
 def creators_call(token, path, body):
@@ -849,14 +855,17 @@ def amz_get_info(token, tag, asins):
         })
         for it in ((res or {}).get("itemsResult") or {}).get("items") or []:
             title = (((it.get("itemInfo") or {}).get("title") or {}).get("displayValue")) or ""
-            p = None
+            p = fallback = None
             for l in (it.get("offersV2") or {}).get("listings") or []:
+                amt = ((l.get("price") or {}).get("money") or {}).get("amount")
+                if amt is None:
+                    continue
                 if l.get("isBuyBoxWinner"):
-                    amt = ((l.get("price") or {}).get("money") or {}).get("amount")
-                    if amt is not None:
-                        p = int(amt)
+                    p = int(amt)
                     break
-            out[it["asin"]] = {"p": p, "t": title}
+                if fallback is None:
+                    fallback = int(amt)  # buybox不在でも先頭出品の価格を出す
+            out[it["asin"]] = {"p": p if p is not None else fallback, "t": title}
     return out
 
 
@@ -1377,8 +1386,9 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
     <option value="ps">PS評価順</option>
   </select>
   <label class="chk"><input type="checkbox" id="steamonly">Steamレビューあり</label>
-  <label class="chk"><input type="checkbox" id="gconly">カタログレビューあり</label>
+  <label class="chk"><input type="checkbox" id="gconly">ゲームカタログ@Wiki判定あり</label>
   <label class="chk"><input type="checkbox" id="psnonly">PSレビューあり</label>
+  <label class="chk" id="azonlylabel"><input type="checkbox" id="azonly">Amazonで購入あり</label>
   <label class="chk"%LOWDISP%><input type="checkbox" id="newlowonly">過去最安のみ</label>
   </div>
 </header>
@@ -1392,7 +1402,8 @@ var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
 var AFF_TAG = "%AFFTAG%";
 var grid = document.getElementById('grid'), count = document.getElementById('count');
-var q = document.getElementById('q'), minpct = document.getElementById('minpct'), maxprice = document.getElementById('maxprice'), sortSel = document.getElementById('sort'), steamOnly = document.getElementById('steamonly'), gcOnly = document.getElementById('gconly'), psnOnly = document.getElementById('psnonly'), newLowOnly = document.getElementById('newlowonly'), minSteam = document.getElementById('minsteam'), minPs = document.getElementById('minps');
+var q = document.getElementById('q'), minpct = document.getElementById('minpct'), maxprice = document.getElementById('maxprice'), sortSel = document.getElementById('sort'), steamOnly = document.getElementById('steamonly'), gcOnly = document.getElementById('gconly'), psnOnly = document.getElementById('psnonly'), newLowOnly = document.getElementById('newlowonly'), minSteam = document.getElementById('minsteam'), minPs = document.getElementById('minps'), azOnly = document.getElementById('azonly');
+if (!AFF_TAG) document.getElementById('azonlylabel').style.display = 'none';  // 個人ページはAmazonボタンなし
 function yen(n) { return n == null ? '' : n.toLocaleString('ja-JP') + '円'; }
 function render() {
   var kw = q.value.trim().toLowerCase();
@@ -1403,6 +1414,7 @@ function render() {
     if (steamOnly.checked && d.sp == null) return false;
     if (gcOnly.checked && !d.gv) return false;
     if (psnOnly.checked && d.pv == null) return false;
+    if (azOnly.checked && !d.az) return false;
     if (newLowOnly.checked && !d.nl) return false;
     if (+minSteam.value > 0 && (d.sp == null || d.sp < +minSteam.value)) return false;
     if (+minPs.value > 0 && (d.pv == null || d.pv < +minPs.value)) return false;
@@ -1672,7 +1684,7 @@ grid.addEventListener('click', function(e) {
 });
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 q.addEventListener('input', render);
-[minpct, maxprice, sortSel, steamOnly, gcOnly, psnOnly, newLowOnly, minSteam, minPs].forEach(function(el){ el.addEventListener('change', function(){ render(); updateFtoggle(); }); });
+[minpct, maxprice, sortSel, steamOnly, gcOnly, psnOnly, newLowOnly, minSteam, minPs, azOnly].forEach(function(el){ el.addEventListener('change', function(){ render(); updateFtoggle(); }); });
 // モバイル: 絞り込みの開閉と適用数バッジ
 var ftoggle = document.getElementById('ftoggle'), controls = document.getElementById('controls');
 ftoggle.addEventListener('click', function(){ controls.classList.toggle('open'); });
@@ -1682,7 +1694,7 @@ function updateFtoggle() {
   if (maxprice.value) n++;
   if (+minSteam.value > 0) n++;
   if (+minPs.value > 0) n++;
-  [steamOnly, gcOnly, psnOnly, newLowOnly].forEach(function(c){ if (c.checked) n++; });
+  [steamOnly, gcOnly, psnOnly, newLowOnly, azOnly].forEach(function(c){ if (c.checked) n++; });
   ftoggle.textContent = n ? '絞り込み(' + n + ')' : '絞り込み';
   ftoggle.classList.toggle('on', n > 0);
 }
