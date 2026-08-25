@@ -858,6 +858,25 @@ def enrich_amazon(items, backfill=False):
         os.replace(tmp, AMZ_CACHE)
 
 
+KOTY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "koty.json")
+
+
+def enrich_koty(items):
+    """クソゲーオブザイヤー(据置Wiki)受賞作なら称号を付与。完全一致のみ(続編誤爆防止)"""
+    try:
+        with open(KOTY_FILE, encoding="utf-8") as f:
+            koty = {norm_name(k): v for k, v in json.load(f).items()}
+    except (OSError, ValueError):
+        return
+    found = 0
+    for it in items:
+        award = koty.get(norm_name(it["n"]))
+        if award:
+            it["kt"] = award
+            found += 1
+    log.info("koty: matched=%d", found)
+
+
 GC_VERDICT_DISPLAY = {"良": "良作", "良*": "良作*", "ク": "クソゲー", "賛否": "賛否両論",
                       "なし": "普通", "なし*": "普通*"}
 
@@ -1073,6 +1092,8 @@ input[type=search] { width:180px; }
 .gc { font-size:10px; margin-top:2px; cursor:pointer; }
 .gc:hover { text-decoration:underline; }
 .gc.good { color:#2e7d32; } .gc.mid { color:#b26a00; } .gc.bad { color:#c62828; } .gc.na { color:var(--sub); }
+.koty { font-size:9px; margin-top:2px; display:inline-block; background:#7b1113; color:#fff; border-radius:3px; padding:1px 5px; font-weight:700; cursor:pointer; }
+.koty:hover { opacity:.85; }
 @media (prefers-color-scheme: dark) { .gc.good { color:#7bc67e; } .gc.mid { color:#e0a34e; } .gc.bad { color:#e57373; } }
 .psn { font-size:10px; margin-top:2px; cursor:pointer; color:#0057b8; }
 .psn:hover { text-decoration:underline; }
@@ -1139,7 +1160,7 @@ footer { text-align:center; color:var(--sub); font-size:11px; padding:20px; }
 %AFFNOTICE%
 <div id="count"></div>
 <div id="grid"></div>
-<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>「カタログ」は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
+<footer>データはニンテンドーストアの検索APIから取得。価格・値引き率は取得時点のもの。「最大◯%OFF」はパッケージ版/DL版などで率が異なる商品。<br>Steamレビューはタイトル名の自動マッチングによる参考情報(Switch版の評価ではありません)。クリックでSteamページを開きます。<br>「過去最安」は2026-08-14からの自前トラッキングによるもので、それ以前のセール履歴は含みません。<br>判定表記は<a href="https://w.atwiki.jp/gcmatome/" target="_blank" rel="noopener">ゲームカタログ@Wiki</a>の判定(タイトル名の自動マッチング)。クリックで該当記事を開きます。「クソゲーオブザイヤー」は<a href="https://koty.wiki/" target="_blank" rel="noopener">KOTY据置Wiki</a>の受賞歴です。<br>「PS ★」はPlayStation Store(日本)の星評価と現在価格(自動マッチング・参考情報。Switch版の評価ではありません)。クリックでPS Storeを開きます。<br><br>本サイトは個人が運営する<b>非公式サイト</b>であり、任天堂株式会社、株式会社ソニー・インタラクティブエンタテインメント、Valve Corporationその他の企業とは一切関係ありません。<br>ゲーム画像・タイトル名等の商標・著作権は各権利者に帰属します。価格・値引き率・評価は取得時点の参考情報であり、正確性を保証しません。購入の際は必ず各公式ストアで最新の価格をご確認ください。<br>掲載内容に問題がある場合は<a href="https://github.com/sotakaki/nintendo-sale-sorter/issues" target="_blank" rel="noopener">GitHubのIssue</a>からご連絡ください。速やかに対応します。</footer>
 <script>
 var DATA = %DATA%;
 var IMG = "%IMGPREFIX%";
@@ -1207,6 +1228,7 @@ function cardHtml(d) {
       + '<span class="pr"><b>' + yen(d.p) + '</b>' + (d.mx ? '〜' : '') + '</span></div>'
       + (orig ? '<div class="mk">定価 ' + yen(orig) + '</div>' : '')
       + lowBadge(d)
+      + kotyBadge(d)
       + gcBadge(d)
       + steamBadge(d)
       + psnBadge(d)
@@ -1298,10 +1320,14 @@ function psnBadge(d) {
   }
   return '<div class="psn"' + (d.pid ? ' data-pid="' + d.pid + '"' : '') + '>' + s + '</div>';
 }
+function kotyBadge(d) {
+  if (!d.kt) return '';
+  return '<div class="koty">クソゲーオブザイヤー ' + esc(d.kt) + '</div>';
+}
 function gcBadge(d) {
   if (!d.gv) return '';
   var cls = /^良/.test(d.gv) ? 'good' : /クソ|劣化|シリ不|不安定/.test(d.gv) ? 'bad' : /^普通/.test(d.gv) ? 'na' : 'mid';
-  return '<div class="gc ' + cls + '"' + (d.gu ? ' data-gu="' + esc(d.gu) + '"' : '') + '>カタログ: ' + esc(d.gv) + '</div>';
+  return '<div class="gc ' + cls + '"' + (d.gu ? ' data-gu="' + esc(d.gu) + '"' : '') + '>ゲームカタログ@Wiki: ' + esc(d.gv) + '</div>';
 }
 function steamBadge(d) {
   if (d.sp == null) return '';
@@ -1325,6 +1351,13 @@ function track(e) {
 }
 grid.addEventListener('click', function(e) {
   track(e);
+  var kb = e.target.closest('.koty');
+  if (kb) {
+    e.preventDefault();
+    e.stopPropagation();
+    window.open('https://koty.wiki/Awarded', '_blank', 'noopener');
+    return;
+  }
   var b = e.target.closest('.stm, .gc, .psn, .amz');
   if (!b) return;
   var url = b.classList.contains('stm')
@@ -1463,6 +1496,8 @@ def build_html(items, te_mode=False, out_path=None):
             d["gv"] = it["gv"]
             if it.get("gu"):
                 d["gu"] = it["gu"]
+        if it.get("kt"):
+            d["kt"] = it["kt"]
         if it.get("pv"):
             d["pv"], d["pn"] = it["pv"], it["pn"]
             if it.get("pid"):
@@ -1506,6 +1541,7 @@ def main():
             raise RuntimeError(f"suspiciously few items: {len(items)} — keeping previous HTML")
         update_price_history(items)
         enrich_game_catalog(items)
+        enrich_koty(items)
         try:
             enrich_steam(items, backfill=backfill)
         except Exception:
