@@ -2,7 +2,7 @@ name: build sale page
 
 on:
   schedule:
-    - cron: '30 15 * * *'   # 00:30 JST (eショップのセール切替=0:00の直後に取得)
+    - cron: '23 15 * * *'   # 00:23 JST (eショップのセール切替=0:00の直後。:00/:30はGitHubのcron混雑で1時間超遅れることがあるため半端な分を指定)
   workflow_dispatch:
 
 permissions:
