@@ -41,4 +41,10 @@ jobs:
           git add docs/index.html docs/te.html price_history.json steam_cache.json psn_cache.json amazon_cache.json regular_prices.json
           git diff --cached --quiet && exit 0
           git commit -m "update $(TZ=Asia/Tokyo date +%F_%H:%M)"
+          # 実行中に手元からpushがあると競合するので、リベースして再pushを試みる
+          # (生成ファイルはこのビルドの方が新しいので -X theirs で自分を優先)
+          for i in 1 2 3; do
+            git push && exit 0
+            git pull --rebase -X theirs origin main || exit 1
+          done
           git push
