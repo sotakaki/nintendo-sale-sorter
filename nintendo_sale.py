@@ -1727,9 +1727,17 @@ PREPAID_IMG = "https://m.media-amazon.com/images/I/51Xu2iDZYSL._AC_SX300_.jpg"
 
 # テクノエッジのGA4(gtag)。IDはtechno-edge.netのGTMコンテナ(GTM-MWBD5H2)内の公開値
 TE_GA_ID = "G-33PLFDWM88"
-TE_GA_HTML = (f'<script async src="https://www.googletagmanager.com/gtag/js?id={TE_GA_ID}"></script>\n'
+# 掲載記事(単体アクセスのリダイレクト先。PVと読者を記事に集約する)
+TE_ARTICLE_URL = "https://www.techno-edge.net/article/2026/08/24/5418.html"
+
+# PVの二重計上対策:
+# - iframe内(=記事内表示)ではpage_viewを送らない。記事ページ自身のGAが1PVを数える
+# - 単体で直接開かれたら記事へリダイレクト(?direct付きなら単体表示を許可、確認用)
+TE_GA_HTML = ('<script>try{if(window.self===window.top&&location.search.indexOf("direct")<0)'
+              f'location.replace("{TE_ARTICLE_URL}");}}catch(e){{}}</script>\n'
+              f'<script async src="https://www.googletagmanager.com/gtag/js?id={TE_GA_ID}"></script>\n'
               '<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}'
-              f"gtag('js',new Date());gtag('config','{TE_GA_ID}');</script>\n")
+              f"gtag('js',new Date());gtag('config','{TE_GA_ID}',{{send_page_view:false}});</script>\n")
 
 # テクノエッジのトンマナ (techno-edge.net から採取: ブランド青#0019FF, 本文#1F2346, 游ゴシック, 角丸4px, 常時ライト)
 TE_THEME_CSS = """<style>
